@@ -16,6 +16,7 @@ Exported node conventions (read by web/src/cockpit.ts):
   extras.seat                         eye point empty for a crew seat
 """
 import argparse
+import json
 import math
 import os
 import sys
@@ -45,6 +46,15 @@ SEAT_X = 0.62             # seat centerline offset (left seat = aircraft command
 SEAT_D = 4.62             # seat back position
 EYE = (SEAT_X, 4.52, 1.52)  # (|x|, d, z) design eye point
 DECK_END_D = 12.4         # aft bulkhead of forward compartment
+
+
+# Collision / navigation registry, exported to b36_nav.json (see export_nav).
+OBSTACLES = []   # (name, x0, x1, d0, d1, z0, z1) in build coordinates
+SEATS = []       # dicts: name, station, eye (x, d, z), yaw (rad, 0 = forward), stand (x, d, z), deck, flies
+
+
+def obstacle(name, x0, x1, d0, d1, z0, z1):
+    OBSTACLES.append((name, min(x0, x1), max(x0, x1), min(d0, d1), max(d0, d1), min(z0, z1), max(z0, z1)))
 
 
 def W(x, d, z):
@@ -166,7 +176,7 @@ def build_canopy_frames_inner():
 def build_shell():
     """Inner skin of the forward compartment, open where the canopy is glazed."""
     n = 64
-    ds = [1.2 + (DECK_END_D - 1.2) * k / 80 for k in range(81)] + list(P.CANOPY_ARCHES_D)
+    ds = [0.4 + 0.1 * k for k in range(12)] + [1.6 + (DECK_END_D - 1.6) * k / 80 for k in range(81)] + list(P.CANOPY_ARCHES_D)
     ds = sorted(set(round(d, 4) for d in ds))
     thetas = [2 * math.pi * k / n for k in range(n)]
     rings = [[B.hull_point(d, t, inset=0.06) for t in thetas] for d in ds]
@@ -174,9 +184,9 @@ def build_shell():
     def mat_fn(i, j):
         dm = 0.5 * (ds[i] + ds[i + 1])
         tm = (j + 0.5) / n * 2 * math.pi
-        if B.is_glazed(dm, tm):
-            return None
         from_top = min(tm, 2 * math.pi - tm)
+        if B.is_glazed(dm, tm) or (dm < 1.45 and from_top > math.radians(58)):  # canopy, nose glazing
+            return None
         return "insulation" if from_top < math.radians(110) else "interior"
 
     mb = MeshBuilder()
@@ -194,13 +204,19 @@ def build_floors():
     mb = MeshBuilder()
     t = 0.05
     hw = hull_half_width(6.0, FLOOR_Z - t) - 0.01
+    fwd_w = hull_half_width(2.6, FLOOR_Z - t) - 0.01
+    wbox(mb, -fwd_w, fwd_w, 2.6, PANEL_D, FLOOR_Z - t, FLOOR_Z, "floor")   # structure under the panel
     wbox(mb, -hw, hw, PANEL_D, 7.6, FLOOR_Z - t, FLOOR_Z, "floor")
     wbox(mb, -0.35, hw, 7.6, 8.6, FLOOR_Z - t, FLOOR_Z, "floor")       # ladder opening on the left
     wbox(mb, -hw, -1.25, 7.6, 8.6, FLOOR_Z - t, FLOOR_Z, "floor")
     wbox(mb, -hw, hw, 8.6, DECK_END_D, FLOOR_Z - t, FLOOR_Z, "floor")
     lw = hull_half_width(6.0, LOWER_FLOOR_Z) - 0.02
-    wbox(mb, -lw, lw, 1.6, DECK_END_D, LOWER_FLOOR_Z - t, LOWER_FLOOR_Z, "floor")
-    # Ladder down to the lower deck
+    lw_f = hull_half_width(2.7, LOWER_FLOOR_Z) - 0.02
+    wbox(mb, -lw_f, lw_f, 2.7, 4.2, LOWER_FLOOR_Z - t, LOWER_FLOOR_Z, "floor")
+    wbox(mb, -lw, lw, 4.2, DECK_END_D, LOWER_FLOOR_Z - t, LOWER_FLOOR_Z, "floor")
+    to_object("Int_Floors", mb)
+    # Ladder down to the lower deck (separate node so it can be clicked)
+    mb = MeshBuilder()
     for x in (-1.15, -0.45):
         tube(mb, W(x, 8.35, LOWER_FLOOR_Z), W(x, 8.0, FLOOR_Z + 0.9), 0.025, seg=8, mat="seatframe")
     for k in range(1, 7):
@@ -208,10 +224,7 @@ def build_floors():
         z = LOWER_FLOOR_Z + (FLOOR_Z - LOWER_FLOOR_Z) * f
         dd = 8.35 - 0.35 * f * (FLOOR_Z + 0.9 - LOWER_FLOOR_Z) / (FLOOR_Z + 0.9 - LOWER_FLOOR_Z)
         tube(mb, W(-1.15, dd, z), W(-0.45, dd, z), 0.018, seg=8, mat="seatframe")
-    # Edge of flight deck under the panel (structure down to lower deck)
-    fw = hull_half_width(PANEL_D, LOWER_FLOOR_Z + 0.5)
-    wbox(mb, -fw, fw, PANEL_D - 0.04, PANEL_D, LOWER_FLOOR_Z + 0.9, FLOOR_Z, "interior")
-    to_object("Int_Floors", mb)
+    to_object("Int_Ladder", mb, extras={"ladder": "fwd"})
 
     # Aft bulkhead with tunnel hatch (tunnel runs aft over the bomb bays)
     mb = MeshBuilder()
@@ -383,6 +396,7 @@ def build_panel(uv):
         polygon_plate(mb, F @ Matrix.Translation((u, v, 0.004)), [(-0.07, -0.03), (0.07, -0.03), (0.07, 0.03), (-0.07, 0.03)],
                       0.002, "placard")
     to_object("Int_Panel", mb)
+    obstacle("main_panel", -1.7, 1.7, 3.30, PANEL_D + 0.06, FLOOR_Z, 1.65)
 
     for side, cluster in (("L", AC_CLUSTER), ("R", P_CLUSTER)):
         for kind, u, v, r in cluster:
@@ -423,6 +437,7 @@ def build_yoke(side, sx):
     tube(mb, Vector((0, 0, 0)), col_frame.inverted() @ hub, 0.045, seg=14, mat="panel")
     box(mb, Matrix.Identity(4), -0.09, 0.09, -0.12, 0.12, -0.02, 0.06, "panel")  # floor boot
     column = ctl(f"Yoke_{side}_Column", mb, col_frame, "yoke_pitch", (1, 0, 0), -0.16, 0.16, seat=side)
+    obstacle(f"yoke_{side}", x - 0.22, x + 0.22, 3.92, 4.22, FLOOR_Z, 1.18)
     # Wheel: ram's-horn handle, local X right, Y up, Z aft toward the pilot
     wf = frame_from(hub, (1, 0, 0), (0, 0, 1))
     wm = MeshBuilder()
@@ -472,6 +487,7 @@ def build_pedestal(uv):
         x = -0.15 + 0.06 * k
         wbox(mb, x - 0.008, x + 0.008, 3.92, 4.20, 0.675, 0.69, "knob")
     to_object("Int_Pedestal", mb)
+    obstacle("pedestal", -0.24, 0.24, PANEL_D, 4.78, FLOOR_Z, 0.72)
 
     # Piston throttles T1..T6 (pivot below the quadrant top; forward = more power)
     for k in range(6):
@@ -512,6 +528,7 @@ def build_overhead():
             x = -0.24 + 0.12 * k
             disc(mb, frame_from(W(x, 4.3 + 0.13 * j, 2.019), (1, 0, 0), (0, 1, 0)), 0.012, 0.0, mat="chrome", seg=12)
     to_object("Int_Overhead", mb)
+    obstacle("overhead", -0.33, 0.33, 3.95, 4.75, 2.02, 2.30)
     for k in range(4):
         x = -0.15 + 0.10 * k
         pivot = W(x, 4.0, 2.06)
@@ -522,23 +539,52 @@ def build_overhead():
         ctl(f"JetThrottle_{k + 1}", lm, fr, "jet_throttle", (1, 0, 0), -0.45, 0.45, engine=k + 1)
 
 
-def build_seat(name, x, d_back, facing=1):
-    """facing=1 faces forward, -1 faces aft."""
+def build_seat(name, station, x, d, yaw, floor=None, eye_up=1.27, stand=None, flies=False):
+    """Crew seat centred at (x, d) on a deck, facing yaw (0 = forward, +pi/2 = left, pi = aft).
+    Registers collision, the sit eye point and the stand-up point."""
+    floor = FLOOR_Z if floor is None else floor
+    fwd = Vector((-math.sin(yaw), math.cos(yaw), 0))   # build coords: +y is forward
+    f = frame_from(W(x, d, floor), (fwd.y, -fwd.x, 0), fwd)  # local X right, Y facing, Z up
     mb = MeshBuilder()
-    s = facing
-    cz = FLOOR_Z + 0.47
-    db = d_back
-    df = d_back - s * 0.48
-    lo, hi = min(db, df), max(db, df)
-    wbox(mb, x - 0.20, x + 0.20, lo + 0.05, hi - 0.05, FLOOR_Z, cz - 0.10, "seatframe")
-    wbox(mb, x - 0.25, x + 0.25, lo, hi, cz - 0.10, cz, "cushion")
-    bk0, bk1 = (db, db + s * 0.10)
-    wbox(mb, x - 0.25, x + 0.25, min(bk0, bk1), max(bk0, bk1), cz, cz + 0.72, "cushion")
-    wbox(mb, x - 0.12, x + 0.12, min(bk0, bk1), max(bk0, bk1) + 0.02, cz + 0.76, cz + 0.98, "cushion")  # headrest
-    tube(mb, W(x, db + s * 0.05, cz + 0.72), W(x, db + s * 0.05, cz + 0.76), 0.02, seg=8, mat="seatframe")
+    cz = 0.47
+    box(mb, f, -0.20, 0.20, -0.18, 0.18, 0.0, cz - 0.10, "seatframe")
+    box(mb, f, -0.25, 0.25, -0.24, 0.24, cz - 0.10, cz, "cushion")
+    box(mb, f, -0.25, 0.25, -0.34, -0.24, cz, cz + 0.70, "cushion")
+    box(mb, f, -0.12, 0.12, -0.34, -0.22, cz + 0.74, cz + 0.96, "cushion")  # headrest
+    box(mb, f, -0.02, 0.02, -0.31, -0.27, cz + 0.70, cz + 0.74, "seatframe")
     for ax in (-0.29, 0.29):  # armrests
-        wbox(mb, x + ax - 0.035, x + ax + 0.035, lo + 0.08, hi, cz + 0.20, cz + 0.25, "seatframe")
-    to_object(name, mb)
+        box(mb, f, ax - 0.035, ax + 0.035, -0.20, 0.20, cz + 0.20, cz + 0.25, "seatframe")
+    to_object(name, mb, extras={"sit": name})
+    corners = [f @ Vector((u, v, 0)) for u in (-0.30, 0.30) for v in (-0.36, 0.26)]
+    obstacle(name.lower(), min(c.x for c in corners), max(c.x for c in corners),
+             min(P.NOSE_Y - c.y for c in corners), max(P.NOSE_Y - c.y for c in corners), floor, floor + cz + 0.96)
+    eye = f @ Vector((0, -0.14, eye_up))  # head just ahead of the headrest
+    sx, sd = stand if stand else (x + 0.7 * math.sin(yaw), d + 0.7 * math.cos(yaw))  # behind the seat
+    SEATS.append({"name": name, "station": station, "eye": (eye.x, P.NOSE_Y - eye.y, eye.z), "yaw": yaw,
+                  "stand": (sx, sd, floor), "deck": "upper" if floor == FLOOR_Z else "lower", "flies": flies})
+
+
+def build_lower_deck():
+    """Placeholder lower-deck stations (manual Fig 1-3): radar observer forward, navigator to the left."""
+    lf = LOWER_FLOOR_Z
+    mb = MeshBuilder()
+    # Radar observer / bombing console with scope, facing aft toward the seat
+    wbox(mb, -0.55, 0.55, 3.55, 4.10, lf, lf + 1.05, "panel")
+    disc(mb, frame_from(W(0, 4.101, lf + 0.80), (1, 0, 0), (0, 0, 1)) @ Matrix.Rotation(math.pi / 2, 4, "X"), 0.16, 0.0,
+         mat="radome", seg=32)
+    wbox(mb, -0.50, 0.50, 4.10, 4.35, lf + 0.62, lf + 0.66, "panel")   # desk lip
+    obstacle("radar_console", -0.55, 0.55, 3.55, 4.35, lf, lf + 1.05)
+    # Navigator's table on the left wall
+    wbox(mb, -1.45, -1.00, 5.30, 6.70, lf + 0.70, lf + 0.75, "floor")
+    wbox(mb, -1.45, -1.40, 5.30, 6.70, lf, lf + 0.70, "panel")
+    wbox(mb, -1.40, -1.05, 5.40, 6.60, lf + 0.751, lf + 0.755, "placard")  # chart
+    obstacle("nav_table", -1.6, -1.00, 5.30, 6.70, lf, lf + 0.75)
+    # K-system equipment rack on the right
+    wbox(mb, 1.00, 1.45, 5.0, 6.4, lf, lf + 1.40, "panel")
+    obstacle("k_rack", 1.00, 1.6, 5.0, 6.4, lf, lf + 1.40)
+    to_object("Int_LowerDeck", mb)
+    build_seat("Seat_RADAR", "radar_observer", 0.0, 4.80, 0.0, floor=lf, eye_up=1.20)
+    build_seat("Seat_NAV", "navigator", -0.55, 6.0, math.pi / 2, floor=lf, eye_up=1.20, stand=(0.05, 6.0))
 
 
 def build_consoles():
@@ -552,6 +598,7 @@ def build_consoles():
                 disc(mb, frame_from(W(sx * (1.17 + 0.14 * j), 3.9 + 0.3 * k, 0.951), (1, 0, 0), (0, 1, 0)),
                      0.018, 0.0, mat="knob", seg=12)
         to_object(f"Int_Console_{'L' if sx < 0 else 'R'}", mb)
+        obstacle(f"console_{'L' if sx < 0 else 'R'}", x_in, x_out, 3.70, 5.70, FLOOR_Z, 0.95)
     # Nose wheel steering tiller on the left console
     tm = MeshBuilder()
     rings = []
@@ -599,7 +646,8 @@ def build_engineer(uv):
     mb = MeshBuilder()
     wbox(mb, 0.05, 1.35, d - 0.45, d, 0.74, 0.79, "panel")   # desk
     to_object("Int_FE_Desk", mb)
-    build_seat("Seat_FE", 0.70, d - 1.05, facing=-1)
+    obstacle("fe_panel", 0.05, 1.7, d - 0.45, d + 0.05, FLOOR_Z, 2.0)
+    build_seat("Seat_FE", "flight_engineer", 0.70, 6.45, math.pi, eye_up=1.25, stand=(0.70, 5.55))
 
 
 def build_radio_rack():
@@ -610,19 +658,84 @@ def build_radio_rack():
             disc(mb, frame_from(W(-0.80 + 0.001, 9.5 + 0.28 * k, 0.6 + 0.25 * j), (0, -1, 0), (0, 0, 1)),
                  0.03, 0.0, mat="knob", seg=12)
     to_object("Int_RadioRack", mb)
+    obstacle("radio_rack", -1.6, -0.80, 9.3, 10.4, FLOOR_Z, 1.35)
+    build_seat("Seat_RO", "radio_operator", -0.30, 9.85, math.pi / 2, eye_up=1.25, stand=(0.25, 9.85))
 
 
 def build_eyepoints():
-    for name, sx in (("Seat_AC", -1), ("Seat_P", 1)):
-        x, d, z = EYE
-        B.empty(f"Eye_{name}", frame=Matrix.Translation(W(sx * x, d, z)),
-                extras={"seat": name, "station": "aircraft_commander" if sx < 0 else "pilot"})
-    B.empty("Eye_Seat_FE", frame=Matrix.Translation(W(0.70, 6.75, 1.50)),
-            extras={"seat": "Seat_FE", "station": "flight_engineer", "yaw_deg": 180.0})
+    for st in SEATS:
+        x, d, z = st["eye"]
+        B.empty(f"Eye_{st['name']}", frame=Matrix.Translation(W(x, d, z)),
+                extras={"seat": st["name"], "station": st["station"], "yaw": st["yaw"]})
+
+
+def hull_top(d, x, inset=0.06, n=256):
+    """Inner skin height above station d at lateral offset x (upper half), build coordinates."""
+    pts = [B.hull_point(d, math.pi / 2 * k / n, inset) for k in range(n + 1)]  # top -> side
+    ax = abs(x)
+    if ax >= pts[-1].x:
+        return pts[-1].z
+    for a, b in zip(pts, pts[1:]):
+        if a.x <= ax <= b.x:
+            t = (ax - a.x) / max(b.x - a.x, 1e-9)
+            return a.z + (b.z - a.z) * t
+    return pts[0].z
+
+
+def export_nav(path):
+    """Walkable decks, obstacles, ceilings, ladders and seats in model (three.js) coordinates:
+    x right, y up, z aft = d - NOSE_Y."""
+    zc = lambda d: d - P.NOSE_Y  # noqa: E731
+    r = 0.24  # crew capsule radius, kept off the hull side
+
+    def wall(d, floor):
+        return min(hull_half_width(d0, floor + 0.55) for d0 in (d,)) - r
+
+    def rects(spans, floor):
+        out = []
+        for d0, d1, x0, x1 in spans:
+            hw = min(wall(d0, floor), wall(d1, floor))
+            out.append({"x0": max(x0, -hw), "x1": min(x1, hw), "z0": zc(d0), "z1": zc(d1)})
+        return out
+
+    big = 9.0
+    upper = rects([(3.66, 7.6, -big, big), (7.6, 8.6, -0.35 + r, big), (8.6, DECK_END_D - 0.05, -big, big)], FLOOR_Z)
+    lower = rects([(2.9, 4.2, -big, big), (4.2, DECK_END_D - 0.05, -big, big)], LOWER_FLOOR_Z)
+
+    def ceiling_grid(d0, d1, ceil_fn):
+        dx = 0.1
+        xs = [-1.9 + dx * i for i in range(int(3.8 / dx) + 1)]
+        ds = [d0 + dx * j for j in range(int((d1 - d0) / dx) + 1)]
+        return {"x0": xs[0], "z0": zc(ds[0]), "step": dx, "nx": len(xs), "nz": len(ds),
+                "y": [round(ceil_fn(d, x), 3) for d in ds for x in xs]}
+
+    decks = [
+        {"id": "upper", "y": FLOOR_Z, "rects": upper,
+         "ceiling": ceiling_grid(3.6, DECK_END_D, lambda d, x: hull_top(d, x))},
+        {"id": "lower", "y": LOWER_FLOOR_Z, "rects": lower,
+         "ceiling": ceiling_grid(2.8, DECK_END_D, lambda d, x: FLOOR_Z - 0.05 if d >= 2.6 else hull_top(d, x))},
+    ]
+    obstacles = [{"name": n, "min": [x0, z0, zc(d0)], "max": [x1, z1, zc(d1)]} for n, x0, x1, d0, d1, z0, z1 in OBSTACLES]
+    ladders = [{
+        "name": "fwd", "x": -0.80,
+        # path waypoints [x, y, z]: lower stand -> foot -> top -> upper stand
+        "path": [[-0.80, LOWER_FLOOR_Z, zc(8.80)], [-0.80, LOWER_FLOOR_Z, zc(8.45)],
+                 [-0.80, FLOOR_Z, zc(8.05)], [-0.80, FLOOR_Z, zc(7.35)]],
+        "lower": "lower", "upper": "upper",
+    }]
+    seats = [{**st, "eye": [st["eye"][0], st["eye"][2], zc(st["eye"][1])],
+              "stand": [st["stand"][0], st["stand"][2], zc(st["stand"][1])]} for st in SEATS]
+    nav = {"units": "m", "frame": "model (x right, y up, z aft)", "radius": r, "eyeStand": 1.62,
+           "eyeCrouch": 1.05, "decks": decks, "obstacles": obstacles, "ladders": ladders, "seats": seats}
+    with open(path, "w") as fh:
+        json.dump(nav, fh, separators=(",", ":"))
+    print("nav:", path, len(obstacles), "obstacles", len(seats), "seats")
 
 
 def build():
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    OBSTACLES.clear()
+    SEATS.clear()
     uv = init_materials()
     B.ROOT = None
     B.ROOT = B.empty("B36_Interior", extras={"generator": "build_interior.py", "units": "m"})
@@ -635,11 +748,13 @@ def build():
         build_pedals(side, sx)
     build_pedestal(uv)
     build_overhead()
-    build_seat("Seat_AC", -SEAT_X, SEAT_D)
-    build_seat("Seat_P", SEAT_X, SEAT_D)
+    for name, station, sx in (("Seat_AC", "aircraft_commander", -1), ("Seat_P", "pilot", 1)):
+        build_seat(name, station, sx * SEAT_X, SEAT_D - 0.24, 0.0, eye_up=EYE[2] - FLOOR_Z,
+                   stand=(sx * SEAT_X, SEAT_D + 0.45), flies=True)
     build_consoles()
     build_engineer(uv)
     build_radio_rack()
+    build_lower_deck()
     build_eyepoints()
 
 
@@ -651,6 +766,7 @@ def main():
     tris = sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in bpy.data.objects if o.type == "MESH")
     print(f"objects={len(bpy.data.objects)} triangles={tris}")
     B.export(args.out)
+    export_nav(os.path.join(os.path.dirname(args.out), "b36_nav.json"))
     print("exported", args.out, os.path.getsize(args.out) // 1024, "KiB")
 
 

@@ -9,7 +9,8 @@
     ],
     "strict": true,
     "types": [
-      "vite/client"
+      "vite/client",
+      "node"
     ],
     "skipLibCheck": true,
     "noEmit": true,

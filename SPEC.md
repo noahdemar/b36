@@ -93,6 +93,29 @@ Status (2026-10-18): first playable pilot station.
 - Known gaps: seats and controls are low-poly; interior lighting is flat (no baked AO); no panel
   lighting at night; tiller and trim are wired but not tuned; jets have no start sequence.
 
+## Crew movement (started 2026-10-18)
+
+User request: foundation for moving around inside the aircraft; keep the current flight controls.
+- Modes: seated (at a station), walking, climbing (ladder), outside camera.
+- Data: build_interior.py writes web/public/models/b36_nav.json in model coordinates (three.js:
+  x right, y up, z aft, origin mid-length): floor rects per deck, obstacle AABBs, ceiling grid per
+  deck (headroom under the curved hull), ladders, seats (sit eye point, facing, stand point).
+- Client: src/crew.ts controller in aircraft-local coordinates (no inertial effects yet).
+  Walking: WASD, right-drag look, Shift faster, C-key stays camera toggle. E or click: sit / use
+  ladder. X: stand up. Flight inputs only reach the sim from the AC and pilot seats.
+- Scope now: forward compartment, both decks, ladder, placeholder lower-deck stations.
+  Next: forward entrance hatch, the 85 ft tunnel with trolley, aft compartment.
+
+## Quality target: "War Thunder" level (user, 2026-10-18)
+
+Long-term target for exterior and interior. Gap list, in planned order:
+1. Surface: UV layout, baked AO, panel-line and rivet normal maps, natural-metal panel variation,
+   insignia and markings (decals), weathering. (Biggest visible gain.)
+2. Geometry detail: cowl flaps and cooling exits, exhaust and turbo outlets, nacelle intakes
+   (wing LE trumpet ducts), gear doors and gear legs, flap tracks, antennas, lights, sighting blisters.
+3. Interior: real seat models, labeled switches and placards, panel lighting, cabin AO.
+4. LODs and performance budget (target 60 fps on mid GPUs), measured, not assumed.
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part

@@ -13,7 +13,10 @@ export const KEY_HELP: [string, string][] = [
   ["B (hold)", "Wheel brakes"],
   ["P", "Parking brake"],
   ["Y", "Mouse yoke on / off"],
-  ["C", "Cockpit / outside view"],
+  ["X", "Stand up from a seat"],
+  ["E (walking)", "Sit down / use ladder (or click the seat)"],
+  ["W A S D (walking)", "Walk; Shift faster, Ctrl crouch"],
+  ["C", "Inside / outside view"],
   ["R", "Reset on runway"],
   ["Right-drag, wheel", "Look around, zoom"],
   ["Left-click / drag", "Operate cockpit controls"],
@@ -35,6 +38,20 @@ export class KeyboardInput {
     });
     target.addEventListener("keyup", (e) => this.down.delete(e.code));
     target.addEventListener("blur", () => this.down.clear());
+  }
+
+  isDown(code: string) {
+    return this.down.has(code);
+  }
+
+  /** Hands off the flight controls (crew member away from a pilot seat). */
+  neutral(c: Controls, dt: number) {
+    const back = (v: number) => v - Math.sign(v) * Math.min(Math.abs(v), 3 * dt);
+    c.elevator = back(c.elevator);
+    c.aileron = back(c.aileron);
+    c.rudder = back(c.rudder);
+    c.brakes = 0;
+    this.mouseYoke = false;
   }
 
   /** Key presses since the last call, in order, repeats kept ("+S" suffix when Shift held). */

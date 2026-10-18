@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Aircraft, defaultAircraftState, loadGltf } from "./aircraft";
 import { Cockpit, type Pickable } from "./cockpit";
+import { Crew, type NavData } from "./crew";
 import { KEY_HELP, KeyboardInput } from "./input";
 import { FlightModel } from "./sim/flightmodel";
 import { World } from "./world";
@@ -32,13 +33,17 @@ const input = new KeyboardInput();
 const aircraftRoot = new THREE.Group();
 scene.add(aircraftRoot);
 
-type View = "cockpit" | "outside";
-let view: View = "cockpit";
-const head = { yaw: 0, pitch: -0.12, fov: 62 };
-debugHook.head = head;
+type View = "inside" | "outside";
+let view: View = "inside";
+const head = { fov: 62 };
+let crew: Crew | null = null;
 debugHook.camera = camera;
 debugHook.scene = scene;
 const eyeLocal = new THREE.Vector3();
+const STATION_NAMES: Record<string, string> = {
+  aircraft_commander: "Aircraft commander", pilot: "Pilot", flight_engineer: "Flight engineer",
+  radio_operator: "Radio operator", radar_observer: "Radar observer", navigator: "Navigator",
+};
 let orbit: OrbitControls | null = null;
 let showHud = true;
 let extFrames: THREE.Object3D | null = null;
@@ -72,8 +77,17 @@ function setView(v: View) {
   camera.updateProjectionMatrix();
 }
 
+/** Flight inputs reach the sim only from a pilot seat. */
+function flying() {
+  return view === "inside" && crew?.mode === "seated" && !!crew.seat?.flies;
+}
+
 const MODEL_EXT = (window as unknown as { B36_MODEL_EXT?: string }).B36_MODEL_EXT ?? "glb";
-Promise.all([loadGltf(`models/b36.${MODEL_EXT}`), loadGltf(`models/b36_interior.${MODEL_EXT}`)]).then(([ext, int]) => {
+const navReq = fetch("models/b36_nav.json").then((r) => r.json() as Promise<NavData>);
+Promise.all([loadGltf(`models/b36.${MODEL_EXT}`), loadGltf(`models/b36_interior.${MODEL_EXT}`), navReq]).then(([ext, int, nav]) => {
+  crew = new Crew(nav);
+  crew.sit("Seat_AC");
+  debugHook.crew = crew;
   const aircraft = new Aircraft(ext);
   const cockpit = new Cockpit(int);
   aircraftRoot.add(ext, int);
@@ -86,10 +100,12 @@ Promise.all([loadGltf(`models/b36.${MODEL_EXT}`), loadGltf(`models/b36_interior.
     if (o instanceof THREE.Mesh) (o.material as THREE.MeshStandardMaterial).envMapIntensity = 0.12;
   });
   extFrames = ext.getObjectByName("CanopyFrame") ?? null;
-  aircraftRoot.updateMatrixWorld(true);
-  const eye = cockpit.eyes.get("Seat_AC")!;
-  eye.getWorldPosition(eyeLocal);
-  aircraftRoot.worldToLocal(eyeLocal);
+  // Dim cabin lights (model coords): flight deck aft area, radio station, lower deck fore and aft.
+  for (const [x, y, z, i] of [[0, 1.6, -18.0, 1.2], [0, 1.6, -15.0, 1.0], [0, -0.1, -20.2, 1.4], [0, -0.1, -16.0, 1.2]]) {
+    const l = new THREE.PointLight(0xffe2b8, i, 5.5, 1.6);
+    l.position.set(x, y, z);
+    aircraftRoot.add(l);
+  }
 
   resetOnRunway();
   setupPointer(cockpit);
@@ -102,14 +118,31 @@ Promise.all([loadGltf(`models/b36.${MODEL_EXT}`), loadGltf(`models/b36_interior.
     const dt = Math.min(clock.getDelta(), 0.1);
     const pressedList = input.takePressed();
     const pressed = new Set(pressedList);
-    if (pressed.has("KeyC")) setView(view === "cockpit" ? "outside" : "cockpit");
+    const cr = crew!;
+    if (pressed.has("KeyC")) setView(view === "inside" ? "outside" : "inside");
+    if (view === "inside" && pressed.has("KeyX") && cr.mode === "seated") cr.standUp();
+    if (view === "inside" && pressed.has("KeyE") && cr.mode === "walking") {
+      const it = cr.nearestInteraction();
+      if (it?.kind === "seat") cr.sit(it.seat.name);
+      else if (it?.kind === "ladder") cr.useLadder(it.ladder);
+    }
     if (pressed.has("KeyR")) resetOnRunway();
     if (pressed.has("KeyH")) {
       showHud = !showHud;
       help.style.display = showHud ? "block" : "none";
     }
-    input.apply(fm.controls, dt, pressedList);
-    if (extFrames) extFrames.visible = view !== "cockpit";
+    if (flying()) input.apply(fm.controls, dt, pressedList);
+    else input.neutral(fm.controls, dt);
+    if (view === "inside" && cr.mode !== "seated") {
+      const k = (...codes: string[]) => codes.some((c) => input.isDown(c));
+      cr.update(dt, {
+        forward: (k("KeyW", "ArrowUp") ? 1 : 0) - (k("KeyS", "ArrowDown") ? 1 : 0),
+        strafe: (k("KeyD", "ArrowRight") ? 1 : 0) - (k("KeyA", "ArrowLeft") ? 1 : 0),
+        run: k("ShiftLeft", "ShiftRight"),
+        crouch: k("ControlLeft", "ControlRight"),
+      });
+    }
+    if (extFrames) extFrames.visible = view !== "inside";
     acc += dt;
     while (acc >= STEP) {
       fm.step(STEP, 2);
@@ -135,10 +168,11 @@ Promise.all([loadGltf(`models/b36.${MODEL_EXT}`), loadGltf(`models/b36_interior.
     aircraft.apply(vis, dt);
     cockpit.update(fm, dt);
 
-    if (view === "cockpit") {
+    if (view === "inside") {
       aircraftRoot.updateMatrixWorld(true);
+      const ang = cr.eye(eyeLocal);
       camera.position.copy(eyeLocal).applyMatrix4(aircraftRoot.matrixWorld);
-      const look = new THREE.Quaternion().setFromEuler(new THREE.Euler(head.pitch, head.yaw, 0, "YXZ"));
+      const look = new THREE.Quaternion().setFromEuler(new THREE.Euler(ang.pitch, ang.yaw, 0, "YXZ"));
       camera.quaternion.copy(aircraftRoot.quaternion).multiply(look);
     } else if (orbit) {
       const delta = aircraftRoot.position.clone().sub(prev);
@@ -148,17 +182,31 @@ Promise.all([loadGltf(`models/b36.${MODEL_EXT}`), loadGltf(`models/b36_interior.
     }
 
     const r = fm.readout;
-    if (showHud) {
+    {
       hud.textContent =
         `IAS ${r.ias_mph.toFixed(0)} mph   ALT ${r.alt_ft.toFixed(0)} ft   VS ${r.vs_fpm.toFixed(0)} fpm   HDG ${r.heading_deg.toFixed(0)}\n` +
         `PISTON ${(c.throttle[0] * 100).toFixed(0)}%   JETS ${c.jetThrottle[0] > 0 ? (c.jetThrottle[0] * 100).toFixed(0) + "%" : "OFF"}   ` +
         `TRIM ${(c.trim * 100).toFixed(0)}   FLAPS ${(fm.flapPos * 100).toFixed(0)}%   GEAR ${fm.gearPos > 0.99 ? "DOWN" : fm.gearPos < 0.01 ? "UP" : "MOVING"}` +
-        `${c.parkingBrake ? "   PARK BRAKE" : ""}${input.mouseYoke ? "   MOUSE YOKE" : ""}`;
-    } else hud.textContent = "";
+        `${c.parkingBrake ? "   PARK BRAKE" : ""}${input.mouseYoke ? "   MOUSE YOKE" : ""}\n` +
+        crewStatus(cr);
+    }
     yokeDot.style.display = input.mouseYoke ? "block" : "none";
     renderer.render(scene, camera);
   });
 });
+
+function crewStatus(cr: Crew): string {
+  if (view !== "inside") return "OUTSIDE VIEW";
+  if (cr.mode === "seated" && cr.seat) {
+    const name = STATION_NAMES[cr.seat.station] ?? cr.seat.station;
+    return `${name.toUpperCase()} SEAT   X: stand up${cr.seat.flies ? "" : "   (station not functional yet)"}`;
+  }
+  if (cr.mode === "climbing") return "ON LADDER";
+  const it = cr.nearestInteraction();
+  const hint = it?.kind === "seat" ? `   E: sit (${STATION_NAMES[it.seat.station] ?? it.seat.station})`
+    : it?.kind === "ladder" ? `   E: ${cr.deck.id === it.ladder.lower ? "climb up" : "climb down"}` : "";
+  return `WALKING, ${cr.deck.id === "upper" ? "FLIGHT DECK" : "LOWER DECK"}${hint}`;
+}
 
 // ---------------------------------------------------------------- pointer: look, pick, drag
 
@@ -201,9 +249,20 @@ function setupPointer(cockpit: Cockpit) {
       el.setPointerCapture(e.pointerId);
       return;
     }
-    if (e.button !== 0 || view !== "cockpit") return;
+    if (e.button !== 0 || view !== "inside") return;
     const p = pickAt(e);
     if (!p) return;
+    const cr = crew!;
+    if (p.control === "sit" || p.control === "ladder") {
+      if (cr.mode !== "walking") return;
+      const it = cr.nearestInteraction();
+      if (p.control === "sit") {
+        const seat = cr.nav.seats.find((s) => s.name === p.data.sit);
+        if (seat && Math.hypot(seat.stand[0] - cr.pos.x, seat.stand[2] - cr.pos.z) < 2.0) cr.sit(seat.name);
+      } else if (it?.kind === "ladder") cr.useLadder(it.ladder);
+      return;
+    }
+    if (!flying()) return;
     const c = fm.controls;
     switch (p.control) {
       case "yoke_pitch":
@@ -229,9 +288,10 @@ function setupPointer(cockpit: Cockpit) {
       yokeDot.style.left = `${e.clientX}px`;
       yokeDot.style.top = `${e.clientY}px`;
     }
-    if (looking && view === "cockpit") {
-      head.yaw = Math.max(-2.6, Math.min(2.6, head.yaw - e.movementX * 0.004));
-      head.pitch = Math.max(-1.3, Math.min(1.3, head.pitch - e.movementY * 0.004));
+    if (looking && view === "inside" && crew) {
+      crew.yaw -= e.movementX * 0.004;
+      if (crew.mode === "seated") crew.yaw = Math.max(-2.6, Math.min(2.6, crew.yaw));
+      crew.pitch = Math.max(-1.3, Math.min(1.3, crew.pitch - e.movementY * 0.004));
       return;
     }
     if (drag) {
@@ -258,8 +318,10 @@ function setupPointer(cockpit: Cockpit) {
       }
       return;
     }
-    if (view === "cockpit") {
-      const p = pickAt(e);
+    if (view === "inside") {
+      let p = pickAt(e);
+      if (p && p.control !== "sit" && p.control !== "ladder" && !flying()) p = null;
+      if (p && (p.control === "sit" || p.control === "ladder") && crew?.mode !== "walking") p = null;
       el.style.cursor = p ? "pointer" : "default";
       label.textContent = p ? describe(p) : "";
     }
@@ -274,7 +336,7 @@ function setupPointer(cockpit: Cockpit) {
   el.addEventListener("pointerup", end);
   el.addEventListener("pointercancel", end);
   el.addEventListener("wheel", (e) => {
-    if (view !== "cockpit") return;
+    if (view !== "inside") return;
     head.fov = Math.max(25, Math.min(80, head.fov + Math.sign(e.deltaY) * 4));
     camera.fov = head.fov;
     camera.updateProjectionMatrix();
@@ -294,6 +356,8 @@ function describe(p: Pickable): string {
     case "trim_elevator": return "Elevator trim wheel (drag)";
     case "tiller": return "Nose wheel steering (drag sideways)";
     case "pedal": return "Rudder pedals (Q / E)";
+    case "sit": return `Seat: ${String(p.data.sit).replace("Seat_", "")} (click to sit)`;
+    case "ladder": return "Ladder between decks (click or E at either end)";
     default: return p.control;
   }
 }

@@ -54,7 +54,7 @@ def make_texture_material(name, image_path, roughness=0.6, emission=0.0, alpha_b
 def init_materials():
     MATS["alu"] = make_material("Aluminum", (0.72, 0.73, 0.75), 1.0, 0.36)
     MATS["alu_dark"] = make_material("AluminumDull", (0.55, 0.56, 0.58), 1.0, 0.48)
-    MATS["glass"] = make_material("Glass", (0.03, 0.045, 0.06), 0.0, 0.03, alpha=0.78)
+    MATS["glass"] = make_material("Glass", (0.10, 0.12, 0.13), 0.0, 0.02, alpha=0.16)
     MATS["black"] = make_material("AntiGlare", (0.015, 0.015, 0.015), 0.0, 0.7)
     MATS["intake"] = make_material("Intake", (0.02, 0.02, 0.022), 0.3, 0.6)
     MATS["exhaust"] = make_material("Exhaust", (0.10, 0.08, 0.07), 0.8, 0.55)

@@ -17,7 +17,7 @@ function lookup(table: number[], v: number) {
 
 export interface Pickable {
   node: THREE.Object3D;
-  control: string;
+  control: string; // a cockpit control, or "sit" / "ladder"
   data: Record<string, unknown>;
 }
 
@@ -57,6 +57,8 @@ export class Cockpit {
     for (let o = obj; o; o = o.parent) {
       const d = o.userData as Record<string, unknown>;
       if (typeof d.control === "string") return { node: o, control: d.control, data: d };
+      if (typeof d.sit === "string") return { node: o, control: "sit", data: d };
+      if (typeof d.ladder === "string") return { node: o, control: "ladder", data: d };
     }
     return null;
   }
