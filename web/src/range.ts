@@ -7,6 +7,7 @@ export interface Target {
   radius: number; // lethal radius for a 1,000 lb GP bomb on this target (ESTIMATED)
   mesh: THREE.Object3D;
   destroyed: boolean;
+  hp?: number; // 20 mm hits to destroy (ESTIMATED)
 }
 
 /** Range centre: 30 km north of the runway threshold (north = -z). */
@@ -91,6 +92,26 @@ export class BombingRange {
       : `Impact ${nd.toFixed(0)} m from ${nearest?.name}${nearest && nd <= nearest.radius ? " (destroyed)" : ""}`;
     this.log.unshift(msg);
     this.log.length = Math.min(this.log.length, 4);
+  }
+
+  /** A 20 mm round reaching the ground: dust puff, and damage to anything within 6 m. */
+  strafe(p: THREE.Vector3) {
+    const puff = new THREE.Mesh(new THREE.SphereGeometry(0.6, 8, 6),
+      new THREE.MeshStandardMaterial({ color: 0x8a7c66, transparent: true, opacity: 0.7, roughness: 1 }));
+    puff.position.set(p.x, 0.8, p.z);
+    this.group.add(puff);
+    this.effects.push({ mesh: puff, t: 0, life: 1.5, grow: 3 });
+    for (const t of this.targets) {
+      if (t.destroyed || Math.hypot(t.pos.x - p.x, t.pos.z - p.z) > 6 + t.radius * 0.2) continue;
+      t.hp = (t.hp ?? (t.radius <= 15 ? 8 : 120)) - 1;
+      if (t.hp <= 0) {
+        t.destroyed = true;
+        const m = t.mesh as THREE.Mesh;
+        (m.material as THREE.MeshStandardMaterial).color.setHex(0x1d1a17);
+        this.log.unshift(`${t.name} destroyed by gunfire`);
+        this.log.length = Math.min(this.log.length, 4);
+      }
+    }
   }
 
   get destroyedCount() {

@@ -29,12 +29,16 @@ VIEWS = {
     "ac_overhead": (W(-0.62, 4.52, 1.52), W(0.0, 4.1, 2.1), 20),
     "deck_rear": (W(0.3, 3.9, 1.7), W(0.0, 9.0, 0.9), 18),
     "wide": (W(-1.2, 6.3, 1.85), W(0.0, 3.6, 1.0), 16),
+    "tunnel": (W(-0.60, 13.0, 1.25), W(-0.60, 30.0, 1.25), 30),
+    "aft_comp": (W(-0.3, 35.3, 0.95), W(0.2, 39.4, 0.0), 18),
+    "aft_gunner_ua": (W(-0.95, 36.8, 0.95), W(-6.0, 38.0, 1.6), 30),
+    "fwd_gunner": (W(1.25, 11.3, 1.15), W(6.0, 13.0, 2.0), 30),
 }
 
 
 def setup(samples, res):
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    for f in ("b36.glb", "b36_interior.glb"):
+    for f in ("b36.gltf", "b36_interior.glb"):
         bpy.ops.import_scene.gltf(filepath=os.path.join(MODELS, f))
     sc = bpy.context.scene
     sc.render.engine = "CYCLES"

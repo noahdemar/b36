@@ -125,3 +125,22 @@ CANOPY_ARCHES_D = [1.95, 2.42, 2.95, 3.5, 4.1, 4.75, 5.6]   # ESTIMATED from fli
 CANOPY_RIBS_DEG = [0, 20, 40, 64]                      # ESTIMATED
 
 RADOME_D = 8.1                     # MEASURED (dashed outline in plan)
+
+# --- sighting blisters and windows: (d, z above fuselage axis, size, role) ESTIMATED ---
+# Glazed blisters protrude from the skin; the hull and cabin lining have openings under them.
+BLISTERS = [
+    (6.4, 0.55, 0.34, "window"), (8.3, 0.55, 0.30, "window"),
+    (11.3, 1.15, 0.36, "upper_fwd"),    # forward upper turret sighting stations (upper deck)
+    (36.8, 0.85, 0.45, "upper_aft"),    # aft compartment upper sighting stations
+    (38.6, -0.25, 0.42, "lower_aft"),   # aft compartment lower sighting stations
+]
+BLISTER_PROTRUDE = 0.55   # fraction of size the blister stands out from the skin
+BLISTER_HOLE = 0.85       # opening radius as a fraction of size
+
+# --- defensive turrets (B-36H): stations aft of the aft compartment moved clear of the cabin ---
+TURRET_D = {"upper_fwd": 10.6, "upper_aft": 40.4, "lower_aft": 40.8}
+
+# --- crew compartments ---
+AFT_COMP_D = (34.6, 39.6)  # aft pressurized compartment, bulkhead to bulkhead (ESTIMATED)
+AFT_FLOOR_Z = -0.60
+TUNNEL = {"x": -0.60, "z": 1.25, "r": 0.33, "d": (12.4, 34.6)}  # crew tunnel over the bomb bays (ESTIMATED)

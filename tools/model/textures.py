@@ -297,8 +297,10 @@ def fuselage(out_dir, w=4096, h=1024):
                 sk.height[int(rr2), int(cc)] -= 0.0008
 
     # retractable turret bay doors (B-36H): upper forward, upper aft, lower aft (outlines + hinge rivets)
-    for dd, a, ln, wd in [(10.6, 28, 2.1, 1.25), (10.6, 332, 2.1, 1.25), (35.6, 28, 2.1, 1.2), (35.6, 332, 2.1, 1.2),
-                          (36.0, 152, 2.1, 1.2), (36.0, 208, 2.1, 1.2)]:
+    T = P.TURRET_D
+    for dd, a, ln, wd in [(T["upper_fwd"], 28, 2.1, 1.25), (T["upper_fwd"], 332, 2.1, 1.25),
+                          (T["upper_aft"], 28, 1.9, 1.0), (T["upper_aft"], 332, 1.9, 1.0),
+                          (T["lower_aft"], 152, 1.9, 1.0), (T["lower_aft"], 208, 1.9, 1.0)]:
         rr = math.radians(a)
         dth = wd / B.fus_radius(dd)
         c0, c1 = col(dd - ln / 2), col(dd + ln / 2)

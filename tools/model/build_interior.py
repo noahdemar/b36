@@ -174,10 +174,17 @@ def build_canopy_frames_inner():
 
 
 def build_shell():
-    """Inner skin of the forward compartment, open where the canopy is glazed."""
-    n = 64
-    ds = [0.4 + 0.1 * k for k in range(12)] + [1.6 + (DECK_END_D - 1.6) * k / 80 for k in range(81)] + list(P.CANOPY_ARCHES_D)
-    ds = sorted(set(round(d, 4) for d in ds))
+    """Inner skin of the forward and aft compartments, open under glazing and blisters."""
+    for name, ds in (
+        ("Int_Shell", [0.4 + 0.1 * k for k in range(12)] + [1.6 + (DECK_END_D - 1.6) * k / 80 for k in range(81)]
+         + list(P.CANOPY_ARCHES_D)),
+        ("Int_ShellAft", [P.AFT_COMP_D[0] + (P.AFT_COMP_D[1] - P.AFT_COMP_D[0]) * k / 40 for k in range(41)]),
+    ):
+        shell_section(name, sorted(set(round(d, 4) for d in ds)))
+
+
+def shell_section(name, ds):
+    n = 96
     thetas = [2 * math.pi * k / n for k in range(n)]
     rings = [[B.hull_point(d, t, inset=0.06) for t in thetas] for d in ds]
 
@@ -185,13 +192,13 @@ def build_shell():
         dm = 0.5 * (ds[i] + ds[i + 1])
         tm = (j + 0.5) / n * 2 * math.pi
         from_top = min(tm, 2 * math.pi - tm)
-        if B.is_glazed(dm, tm) or (dm < 1.45 and from_top > math.radians(58)):  # canopy, nose glazing
+        if B.is_glazed(dm, tm) or (dm < 1.45 and from_top > math.radians(58)) or B.under_blister(dm, tm, 0.06):
             return None
         return "insulation" if from_top < math.radians(110) else "interior"
 
     mb = MeshBuilder()
     mb.loft(rings, closed=True, mat_fn=mat_fn)
-    to_object("Int_Shell", mb.flipped(), smooth_angle=50)
+    to_object(name, mb.flipped(), smooth_angle=50)
 
 
 def hull_half_width(d, z, inset=0.06):
@@ -233,9 +240,9 @@ def build_floors():
     r = B.fus_radius(d) - 0.06
     pts = [(r * math.cos(2 * math.pi * k / 48), r * math.sin(2 * math.pi * k / 48)) for k in range(48)]
     polygon_plate(mb, frame, pts, 0.04, "interior")
-    hatch = frame_from(W(-0.85, d - 0.005, 0.95), (1, 0, 0), (0, 0, 1))
-    disc(mb, hatch, 0.42, 0.0, mat="insulation", seg=32)
-    annulus(mb, hatch, 0.42, 0.48, 0.005, "seatframe", seg=32)
+    hatch = frame_from(W(P.TUNNEL["x"], d - 0.005, P.TUNNEL["z"]), (1, 0, 0), (0, 0, 1))
+    disc(mb, hatch, P.TUNNEL["r"], 0.0, mat="insulation", seg=32)
+    annulus(mb, hatch, P.TUNNEL["r"], P.TUNNEL["r"] + 0.07, 0.005, "seatframe", seg=32)
     to_object("Int_AftBulkhead", mb)
 
 
@@ -560,8 +567,132 @@ def build_seat(name, station, x, d, yaw, floor=None, eye_up=1.27, stand=None, fl
              min(P.NOSE_Y - c.y for c in corners), max(P.NOSE_Y - c.y for c in corners), floor, floor + cz + 0.96)
     eye = f @ Vector((0, -0.14, eye_up))  # head just ahead of the headrest
     sx, sd = stand if stand else (x + 0.7 * math.sin(yaw), d + 0.7 * math.cos(yaw))  # behind the seat
+    deck = "upper" if floor == FLOOR_Z else "lower" if floor == LOWER_FLOOR_Z else "aft"
+    stand_floor = FLOOR_Z if deck == "upper" else LOWER_FLOOR_Z if deck == "lower" else P.AFT_FLOOR_Z
     SEATS.append({"name": name, "station": station, "eye": (eye.x, P.NOSE_Y - eye.y, eye.z), "yaw": yaw,
-                  "stand": (sx, sd, floor), "deck": "upper" if floor == FLOOR_Z else "lower", "flies": flies})
+                  "stand": (sx, sd, stand_floor), "deck": deck, "flies": flies})
+
+
+def build_forward_gunners():
+    """Forward upper turret sighting stations at the upper-deck blisters (one each side)."""
+    for c, nrm, sz, role, side in B.blister_centers():
+        if role != "upper_fwd":
+            continue
+        sx = 1 if side == "R" else -1
+        d = P.NOSE_Y - c.y
+        build_seat(f"Seat_GUF_{side}", f"gunner_upper_fwd_{side}", sx * 0.85, d, -sx * math.pi / 2, eye_up=0.95,
+                   stand=(sx * 0.25, d))
+        SEATS[-1]["sight"] = {"eye": [c.x - sx * 0.12, c.z, d - P.NOSE_Y], "turrets": ["Turret_UpperFwd_L", "Turret_UpperFwd_R"]}
+
+
+def bulkhead(name, d, holes, mat="interior"):
+    """Pressure bulkhead plate at station d with dark openings: list of (x, z, r)."""
+    mb = MeshBuilder()
+    frame = frame_from(W(0, d, B.fus_center_z(d)), (1, 0, 0), (0, 0, 1))
+    r = B.fus_radius(d) - 0.06
+    pts = [(r * math.cos(2 * math.pi * k / 48), r * math.sin(2 * math.pi * k / 48)) for k in range(48)]
+    polygon_plate(mb, frame, pts, 0.04, mat)
+    for x, z, hr in holes:
+        hf = frame_from(W(x, d - 0.005, z), (1, 0, 0), (0, 0, 1))
+        disc(mb, hf, hr, 0.0, mat="insulation", seg=32)
+        annulus(mb, hf, hr, hr + 0.07, 0.005, "seatframe", seg=32)
+        hb = frame_from(W(x, d + 0.045, z), (1, 0, 0), (0, 0, -1))
+        disc(mb, hb, hr, 0.0, mat="insulation", seg=32)
+    to_object(name, mb)
+
+
+def build_tunnel():
+    """85 ft pressurized crawl tunnel over the bomb bays, with the crew trolley."""
+    T = P.TUNNEL
+    d0, d1 = T["d"]
+    mb = MeshBuilder()
+    rings = []
+    ds = [d0 + (d1 - d0) * k / 60 for k in range(61)]
+    for d in ds:
+        rings.append([W(T["x"] + T["r"] * math.cos(2 * math.pi * k / 24), d, T["z"] + T["r"] * math.sin(2 * math.pi * k / 24))
+                      for k in range(24)])
+    mb.loft(rings, closed=True, mat="insulation")
+    tm = mb.flipped()
+    # floor rails and frames every 0.9 m
+    for x in (-0.12, 0.12):
+        tube(tm, W(T["x"] + x, d0, T["z"] - T["r"] + 0.04), W(T["x"] + x, d1, T["z"] - T["r"] + 0.04), 0.012, seg=6, mat="chrome")
+    for d in [d0 + 0.9 * k for k in range(int((d1 - d0) / 0.9) + 1)]:
+        ring = [W(T["x"] + (T["r"] - 0.01) * math.cos(2 * math.pi * k / 24), d, T["z"] + (T["r"] - 0.01) * math.sin(2 * math.pi * k / 24))
+                for k in range(25)]
+        for p0, p1 in zip(ring, ring[1:]):
+            tube(tm, p0, p1, 0.012, seg=5, mat="seatframe")
+    for d in [d0 + 3.0 * k + 1.5 for k in range(int((d1 - d0) / 3.0))]:  # dome lights
+        disc(tm, frame_from(W(T["x"], d, T["z"] + T["r"] - 0.02), (1, 0, 0), (0, 1, 0)) @ Matrix.Rotation(math.pi, 4, "X"),
+             0.04, 0.0, mat="lamp_white", seg=12)
+    to_object("Int_Tunnel", tm)
+    # trolley: flat board on four wheels, moved by the client with the crew member
+    trm = MeshBuilder()
+    zf = T["z"] - T["r"] + 0.06
+    box(trm, Matrix.Identity(4), -0.20, 0.20, -0.75, 0.75, 0.0, 0.04, "cushion")
+    for sx in (-0.12, 0.12):
+        for sy in (-0.6, 0.6):
+            revolve(trm, lambda t, sx=sx, sy=sy: Vector((sx + t, sy, -0.02)), [(-0.015, 0.03), (0.015, 0.03)], axis="x",
+                    seg=10, mat="knob", cap_start=True, cap_end=True)
+    f = frame_from(W(T["x"], d0 + 1.0, zf), (1, 0, 0), (0, 1, 0))
+    to_object("Tunnel_Trolley", transformed(trm, f), frame=f, extras={"trolley": "tunnel"})
+
+
+def build_aft_compartment(uv):
+    """Aft pressurized compartment: bunks, galley, upper and lower sighting stations, tail gunner."""
+    d0, d1 = P.AFT_COMP_D
+    fz = P.AFT_FLOOR_Z
+    T = P.TUNNEL
+    bulkhead("Int_AftFwdBulkhead", d0, [(T["x"], T["z"], T["r"])])
+    bulkhead("Int_AftRearBulkhead", d1 - 0.04, [(0.0, fz + 0.95, 0.38)])
+    mb = MeshBuilder()
+    t = 0.05
+    for a, b in ((d0, 37.2), (37.2, d1)):
+        hw = min(hull_half_width(a, fz - t), hull_half_width(b, fz - t)) - 0.01
+        wbox(mb, -hw, hw, a, b, fz - t, fz, "floor")
+    # ladder from the tunnel mouth down to the floor
+    for x in (T["x"] - 0.2, T["x"] + 0.2):
+        tube(mb, W(x, d0 + 0.08, fz), W(x, d0 + 0.08, T["z"] - T["r"]), 0.02, seg=8, mat="seatframe")
+    for k in range(1, 6):
+        z = fz + (T["z"] - T["r"] - fz) * k / 6
+        tube(mb, W(T["x"] - 0.2, d0 + 0.08, z), W(T["x"] + 0.2, d0 + 0.08, z), 0.016, seg=8, mat="seatframe")
+    # bunks (right side, two tiers) and galley table (left)
+    for tier in (0, 1):
+        z = fz + 0.45 + tier * 0.75
+        wbox(mb, 0.75, 1.42, 34.75, 36.55, z, z + 0.12, "cushion")
+        wbox(mb, 0.75, 1.42, 34.75, 36.55, z - 0.04, z, "seatframe")
+    obstacle("bunks", 0.75, 1.6, 34.75, 36.55, fz, fz + 1.4)
+    wbox(mb, -1.40, -0.90, 35.15, 36.0, fz + 0.72, fz + 0.77, "floor")
+    wbox(mb, -1.40, -1.35, 35.15, 36.0, fz, fz + 0.72, "seatframe")
+    obstacle("galley", -1.6, -0.90, 35.15, 36.0, fz, fz + 0.77)
+    # tail gunner's APG-41 radar console against the rear bulkhead
+    wbox(mb, -0.50, 0.50, d1 - 0.55, d1 - 0.05, fz, fz + 1.05, "panel")
+    disc(mb, frame_from(W(0, d1 - 0.551, fz + 0.80), (1, 0, 0), (0, 0, 1)) @ Matrix.Rotation(math.pi / 2, 4, "X")
+         @ Matrix.Rotation(math.pi, 4, "Y"), 0.14, 0.0, mat="radome", seg=32)
+    obstacle("tail_console", -0.50, 0.50, d1 - 0.55, d1, fz, fz + 1.05)
+    to_object("Int_AftCompartment", mb)
+    build_seat("Seat_TAIL", "tail_gunner", 0.0, d1 - 1.05, math.pi, floor=fz, eye_up=1.15, stand=(0.0, d1 - 1.75))
+    SEATS[-1]["sight"] = {"eye": [0.0, B.fus_center_z(48.3) - 0.15, 48.3 + 0.2 - P.NOSE_Y], "turrets": ["Turret_Tail"],
+                          "aft": True}
+    for c, nrm, sz, role, side in B.blister_centers():
+        if role not in ("upper_aft", "lower_aft"):
+            continue
+        sx = 1 if side == "R" else -1
+        d = P.NOSE_Y - c.y
+        upper = role == "upper_aft"
+        name = f"Seat_G{'UA' if upper else 'LA'}_{side}"
+        # upper gunners sit on a raised platform to reach the high blister
+        floor = fz + (0.55 if upper else 0.0)
+        if upper:
+            wbox(mb2 := MeshBuilder(), sx * 0.55, sx * 1.25, d - 0.45, d + 0.45, fz, floor, "floor")
+            to_object(f"Int_Platform_{side}", mb2)
+        build_seat(name, f"gunner_{'upper' if upper else 'lower'}_aft_{side}", sx * 0.85, d, -sx * math.pi / 2,
+                   floor=floor, eye_up=c.z - floor - 0.02, stand=(sx * 0.15, d))
+        SEATS[-1]["deck"] = "aft"
+        pair = ["Turret_UpperAft_L", "Turret_UpperAft_R"] if upper else ["Turret_LowerAft_L", "Turret_LowerAft_R"]
+        SEATS[-1]["sight"] = {"eye": [c.x - sx * 0.12, c.z, d - P.NOSE_Y], "turrets": pair}
+    for st in SEATS:
+        if st["name"] == "Seat_TAIL":
+            st["deck"] = "aft"
 
 
 def build_lower_deck():
@@ -584,6 +715,7 @@ def build_lower_deck():
     obstacle("k_rack", 1.00, 1.6, 5.0, 6.4, lf, lf + 1.40)
     to_object("Int_LowerDeck", mb)
     build_seat("Seat_RADAR", "radar_observer", 0.0, 4.80, 0.0, floor=lf, eye_up=1.20)
+    SEATS[-1]["sight"] = {"eye": [0.0, B.fus_center_z(0.9) - 0.15, 0.6 - P.NOSE_Y], "turrets": ["Turret_Nose"], "nose": True}
     build_seat("Seat_NAV", "navigator", -0.55, 6.0, math.pi / 2, floor=lf, eye_up=1.20, stand=(0.05, 6.0))
 
 
@@ -709,7 +841,11 @@ def export_nav(path):
         return {"x0": xs[0], "z0": zc(ds[0]), "step": dx, "nx": len(xs), "nz": len(ds),
                 "y": [round(ceil_fn(d, x), 3) for d in ds for x in xs]}
 
+    fz = P.AFT_FLOOR_Z
+    a0, a1 = P.AFT_COMP_D
+    aft = rects([(a0 + 0.06, 37.2, -big, big), (37.2, a1 - 0.08, -big, big)], fz)
     decks = [
+        {"id": "aft", "y": fz, "rects": aft, "ceiling": ceiling_grid(a0, a1, lambda d, x: hull_top(d, x))},
         {"id": "upper", "y": FLOOR_Z, "rects": upper,
          "ceiling": ceiling_grid(3.6, DECK_END_D, lambda d, x: hull_top(d, x))},
         {"id": "lower", "y": LOWER_FLOOR_Z, "rects": lower,
@@ -723,10 +859,22 @@ def export_nav(path):
                  [-0.80, FLOOR_Z, zc(8.05)], [-0.80, FLOOR_Z, zc(7.35)]],
         "lower": "lower", "upper": "upper",
     }]
+    T = P.TUNNEL
+    tunnels = [{
+        "name": "tunnel",
+        # eye path (lying prone on the trolley): upper-deck hatch -> tunnel -> aft ladder foot
+        "path": [[T["x"], FLOOR_Z + 1.0, zc(12.12)], [T["x"], T["z"], zc(T["d"][0] + 0.3)],
+                 [T["x"], T["z"], zc(T["d"][1] - 0.3)], [T["x"], T["z"] - 0.1, zc(T["d"][1] + 0.25)],
+                 [T["x"], fz + 1.5, zc(T["d"][1] + 0.6)]],
+        "trolley": [zc(T["d"][0] + 1.0), zc(T["d"][1] - 1.0)],
+        "ends": [{"deck": "upper", "stand": [T["x"], FLOOR_Z, zc(12.08)]},
+                 {"deck": "aft", "stand": [T["x"], fz, zc(T["d"][1] + 0.75)]}],
+    }]
     seats = [{**st, "eye": [st["eye"][0], st["eye"][2], zc(st["eye"][1])],
               "stand": [st["stand"][0], st["stand"][2], zc(st["stand"][1])]} for st in SEATS]
     nav = {"units": "m", "frame": "model (x right, y up, z aft)", "radius": r, "eyeStand": 1.62,
-           "eyeCrouch": 1.05, "decks": decks, "obstacles": obstacles, "ladders": ladders, "seats": seats}
+           "eyeCrouch": 1.05, "decks": decks, "obstacles": obstacles, "ladders": ladders, "tunnels": tunnels,
+           "seats": seats}
     with open(path, "w") as fh:
         json.dump(nav, fh, separators=(",", ":"))
     print("nav:", path, len(obstacles), "obstacles", len(seats), "seats")
@@ -754,7 +902,10 @@ def build():
     build_consoles()
     build_engineer(uv)
     build_radio_rack()
+    build_forward_gunners()
     build_lower_deck()
+    build_tunnel()
+    build_aft_compartment(uv)
     build_eyepoints()
 
 

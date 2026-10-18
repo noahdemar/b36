@@ -7,22 +7,27 @@ export interface Grid { x0: number; z0: number; step: number; nx: number; nz: nu
 export interface Deck { id: string; y: number; rects: Rect[]; ceiling: Grid }
 export interface Obstacle { name: string; min: [number, number, number]; max: [number, number, number] }
 export interface Ladder { name: string; x: number; path: [number, number, number][]; lower: string; upper: string }
+export interface Sight { eye: [number, number, number]; turrets: string[]; nose?: boolean; aft?: boolean }
 export interface Seat {
   name: string; station: string; eye: [number, number, number]; yaw: number;
-  stand: [number, number, number]; deck: string; flies: boolean;
+  stand: [number, number, number]; deck: string; flies: boolean; sight?: Sight;
 }
+export interface TunnelEnd { deck: string; stand: [number, number, number] }
+export interface Tunnel { name: string; path: [number, number, number][]; trolley: [number, number]; ends: [TunnelEnd, TunnelEnd] }
 export interface NavData {
   radius: number; eyeStand: number; eyeCrouch: number;
-  decks: Deck[]; obstacles: Obstacle[]; ladders: Ladder[]; seats: Seat[];
+  decks: Deck[]; obstacles: Obstacle[]; ladders: Ladder[]; seats: Seat[]; tunnels: Tunnel[];
 }
 
 export interface MoveInput { forward: number; strafe: number; run: boolean; crouch: boolean }
 
-export type CrewMode = "seated" | "walking" | "climbing";
+export type CrewMode = "seated" | "walking" | "climbing" | "tunnel";
+export type Interaction = { kind: "seat"; seat: Seat } | { kind: "ladder"; ladder: Ladder } | { kind: "tunnel"; tunnel: Tunnel; end: 0 | 1 };
 
 const WALK = 1.3; // m/s
 const RUN = 2.4;
 const CLIMB = 0.55;
+const TROLLEY = 1.1; // m/s pulling along the tunnel rope (ESTIMATED)
 const STEP_OVER = 0.15; // obstacles lower than this are stepped over
 const HEAD_CLEAR = 0.1; // eye stays this far below the ceiling
 
@@ -36,6 +41,7 @@ export class Crew {
   pitch = 0;
   eyeHeight: number;
   private climb: { ladder: Ladder; s: number; dir: 1 | -1; length: number } | null = null;
+  tunnel: { t: Tunnel; s: number; length: number; dir: 1 | -1 } | null = null;
 
   constructor(nav: NavData) {
     this.nav = nav;
@@ -79,7 +85,16 @@ export class Crew {
     this.yaw = 0;
   }
 
-  private pathPoint(l: Ladder, s: number, out: Vector3) {
+  /** Enter a tunnel at one of its ends (0 = forward, 1 = aft). */
+  useTunnel(t: Tunnel, end: 0 | 1) {
+    const length = pathLength(t.path);
+    this.tunnel = { t, s: end === 0 ? 0 : length, length, dir: end === 0 ? 1 : -1 };
+    this.mode = "tunnel";
+    this.yaw = end === 0 ? Math.PI : 0; // face the direction of travel (aft = +z)
+    this.pitch = 0;
+  }
+
+  private pathPoint(l: { path: [number, number, number][] }, s: number, out: Vector3) {
     const p = l.path;
     let rem = s;
     for (let i = 0; i < p.length - 1; i++) {
@@ -95,9 +110,16 @@ export class Crew {
   }
 
   /** Nearest seat or ladder end the crew member can reach (for the E key). */
-  nearestInteraction(): { kind: "seat"; seat: Seat } | { kind: "ladder"; ladder: Ladder } | null {
+  nearestInteraction(): Interaction | null {
     if (this.mode !== "walking") return null;
-    let best: { d: number; v: { kind: "seat"; seat: Seat } | { kind: "ladder"; ladder: Ladder } } | null = null;
+    let best: { d: number; v: Interaction } | null = null;
+    for (const t of this.nav.tunnels ?? []) {
+      t.ends.forEach((e, i) => {
+        if (e.deck !== this.deck.id) return;
+        const d = Math.hypot(e.stand[0] - this.pos.x, e.stand[2] - this.pos.z);
+        if (d < 0.9 && (!best || d < best.d)) best = { d, v: { kind: "tunnel", tunnel: t, end: i as 0 | 1 } };
+      });
+    }
     for (const s of this.nav.seats) {
       if (s.deck !== this.deck.id) continue;
       const d = Math.hypot(s.stand[0] - this.pos.x, s.stand[2] - this.pos.z);
@@ -174,6 +196,19 @@ export class Crew {
   }
 
   update(dt: number, input: MoveInput) {
+    if (this.mode === "tunnel" && this.tunnel) {
+      const tn = this.tunnel;
+      tn.s += tn.dir * input.forward * TROLLEY * (input.run ? 1.6 : 1) * dt;
+      if (tn.s <= 0 || tn.s >= tn.length) {
+        const end = tn.t.ends[tn.s <= 0 ? 0 : 1];
+        this.deck = this.deckById(end.deck);
+        this.pos.set(end.stand[0], this.deck.y, end.stand[2]);
+        this.yaw = tn.s <= 0 ? 0 : Math.PI;
+        this.tunnel = null;
+        this.mode = "walking";
+      }
+      return;
+    }
     if (this.mode === "climbing" && this.climb) {
       const c = this.climb;
       c.s += c.dir * CLIMB * dt * (input.forward !== 0 ? 1.6 : 1);
@@ -212,6 +247,10 @@ export class Crew {
 
   /** Eye position (model coords) and view angles (yaw about +y, pitch about x). */
   eye(out: Vector3): { yaw: number; pitch: number } {
+    if (this.mode === "tunnel" && this.tunnel) {
+      this.pathPoint(this.tunnel.t, Math.max(0, Math.min(this.tunnel.length, this.tunnel.s)), out);
+      return { yaw: this.yaw, pitch: this.pitch };
+    }
     if (this.mode === "seated" && this.seat) {
       out.set(this.seat.eye[0], this.seat.eye[1], this.seat.eye[2]);
       return { yaw: this.seat.yaw + this.yaw, pitch: this.pitch };
@@ -219,4 +258,10 @@ export class Crew {
     out.set(this.pos.x, this.pos.y + this.eyeHeight, this.pos.z);
     return { yaw: this.yaw, pitch: this.pitch };
   }
+}
+
+function pathLength(p: [number, number, number][]) {
+  let L = 0;
+  for (let i = 1; i < p.length; i++) L += Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1], p[i][2] - p[i - 1][2]);
+  return L;
 }

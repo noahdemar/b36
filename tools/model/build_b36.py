@@ -499,6 +499,30 @@ def hull_point(d, theta, inset=0.0):
     return Vector((r * math.sin(theta), fus_y(d), fus_center_z(d) + r * math.cos(theta)))
 
 
+def blister_centers():
+    """(skin point, outward normal, size, role, side) for each blister on both sides."""
+    out = []
+    for d, z, sz, role in P.BLISTERS:
+        r, zc = fus_radius(d), fus_center_z(d)
+        x = math.sqrt(max(r * r - z * z, 0.01))
+        for sx in (1, -1):
+            n = Vector((sx * x, 0, z)).normalized()
+            out.append((Vector((sx * x, fus_y(d), zc + z)), n, sz, role, "R" if sx > 0 else "L"))
+    return out
+
+
+BLISTER_LIST = None
+
+
+def under_blister(d, theta, inset=0.0):
+    """True where the skin is cut away under a sighting blister."""
+    global BLISTER_LIST
+    if BLISTER_LIST is None:
+        BLISTER_LIST = blister_centers()
+    p = hull_point(d, theta, inset)
+    return any((p - c).length < sz * P.BLISTER_HOLE for c, _n, sz, _r, _s in BLISTER_LIST)
+
+
 def is_glazed(d, theta):
     theta %= 2 * math.pi
     t = min(theta, 2 * math.pi - theta)
@@ -565,6 +589,8 @@ def build_fuselage():
         from_top = min(tm, 2 * math.pi - tm)
         if is_glazed(dm, tm):
             return "glass"
+        if under_blister(dm, tm):
+            return None
         if dm < 1.45 and from_top > math.radians(58):
             return "glass"
         if dm < 1.45:
@@ -629,12 +655,11 @@ def build_fuselage():
 
     # Side windows and sighting blisters (glass)
     mb = MeshBuilder()
-    for d, z, s in ((6.4, 0.55, 0.34), (8.3, 0.55, 0.30), (36.8, 0.85, 0.45), (38.6, -0.25, 0.42)):
-        r = fus_radius(d)
-        zc = fus_center_z(d)
-        x = math.sqrt(max(r * r - (z) ** 2, 0.01))
-        for sx in (1, -1):
-            ellipsoid(mb, (sx * (x - s * 0.55), fus_y(d), zc + z), (s * 0.75, s, s), seg=20, rings_n=10)
+    for c, n, sz, role, side in blister_centers():
+        # half-dome standing out of the skin along its normal; frame ring at the base
+        center = c - n * sz * (1 - P.BLISTER_PROTRUDE)
+        ellipsoid(mb, center, (sz * abs(n.x) + sz * 0.9 * abs(n.z), sz, sz * abs(n.z) + sz * 0.9 * abs(n.x)),
+                  seg=24, rings_n=12)
     to_object("Blisters", mb)
 
     # Antennas: dorsal masts
@@ -1139,7 +1164,7 @@ def build_turrets():
     def bot(d):
         return fus_center_z(d) - fus_radius(d)
 
-    for d, label in ((10.6, "UpperFwd"), (35.6, "UpperAft")):
+    for d, label in ((P.TURRET_D["upper_fwd"], "UpperFwd"), (P.TURRET_D["upper_aft"], "UpperAft")):
         for sx, s in ((1, "R"), (-1, "L")):
             a = math.radians(28)
             r = fus_radius(d)
@@ -1147,7 +1172,7 @@ def build_turrets():
             up = Vector((sx * math.sin(a), 0, math.cos(a)))
             build_turret(f"Turret_{label}_{s}", Vector(pivot) - up * 0.95, up, (0, 1, 0), retract=0.95)
     for sx, s in ((1, "R"), (-1, "L")):
-        d = 36.0
+        d = P.TURRET_D["lower_aft"]
         a = math.radians(152)
         r = fus_radius(d)
         pivot = (sx * r * math.sin(a) * 0.98, fus_y(d), fus_center_z(d) + r * math.cos(a) * 0.98)

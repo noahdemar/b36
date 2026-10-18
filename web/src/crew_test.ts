@@ -88,5 +88,26 @@ check(r.dist < 0.3, `reaches the flight engineer's seat (dist ${r.dist.toFixed(2
 const n3 = c.nearestInteraction();
 check(n3?.kind === "seat" && n3.seat.name === "Seat_FE", "flight engineer's seat is the nearest interaction");
 
+// To the tunnel: aft along the right of the ladder opening, then across to the hatch
+c.standUp();
+for (const [x, z] of [[-0.55, -18.5], [-0.55, -17.13], [0.3, -17.13], [0.3, -16.6], [0.15, -12.8]]) walkTo(c, x, z);
+const tun = nav.tunnels[0];
+r = walkTo(c, tun.ends[0].stand[0], tun.ends[0].stand[2]);
+check(r.dist < 0.3 && !r.hit, `reaches the tunnel hatch (dist ${r.dist.toFixed(2)} m${r.hit ? ", inside " + r.hit : ""})`);
+const nt = c.nearestInteraction();
+check(nt?.kind === "tunnel", "tunnel is the nearest interaction at the hatch");
+if (nt?.kind === "tunnel") c.useTunnel(nt.tunnel, nt.end);
+let tunnelTime = 0;
+for (; tunnelTime < 60 && c.mode === "tunnel"; tunnelTime += 1 / 60) c.update(1 / 60, { forward: 1, strafe: 0, run: false, crouch: false });
+check(c.mode === "walking" && c.deck.id === "aft", `crawls the tunnel to the aft compartment in ${tunnelTime.toFixed(0)} s`);
+const ua = nav.seats.find((s) => s.name === "Seat_GUA_L")!;
+r = walkTo(c, ua.stand[0], ua.stand[2]);
+check(r.dist < 0.3 && !r.hit, `walks to the upper aft gunner's seat (dist ${r.dist.toFixed(2)} m${r.hit ? ", inside " + r.hit : ""})`);
+const ns = c.nearestInteraction();
+check(ns?.kind === "seat" && ns.seat.name === "Seat_GUA_L", "upper aft gunner's seat is the nearest interaction");
+check(!!ua.sight && ua.sight.turrets.length === 2, "the station controls the two upper aft turrets");
+const tail = nav.seats.find((s) => s.name === "Seat_TAIL")!;
+r = walkTo(c, tail.stand[0], tail.stand[2]);
+check(r.dist < 0.3 && !r.hit, `walks to the tail gunner's station (dist ${r.dist.toFixed(2)} m${r.hit ? ", inside " + r.hit : ""})`);
 console.log(failures ? `${failures} FAILED` : "all passed");
 process.exit(failures ? 1 : 0);
