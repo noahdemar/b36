@@ -1,0 +1,385 @@
+// 6-DOF rigid-body flight model for the B-36.
+// Frames: world = three.js world (x east, y up, z south; "north" is -z).
+// Body = three.js model axes: +x right wing, +y up, +z aft (nose points -z).
+import { Quaternion, Vector3 } from "three";
+import { atmosphere, G0 } from "./atmosphere.ts";
+import { AIRCRAFT, type AircraftParams } from "./params.ts";
+
+export interface Controls {
+  elevator: number; // -1..1, + = pull (nose up)
+  aileron: number; // -1..1, + = roll right
+  rudder: number; // -1..1, + = yaw right
+  trim: number; // -1..1 elevator trim, + = nose up
+  throttle: number[]; // 6 piston throttles 0..1
+  jetThrottle: number[]; // 4 jet throttles 0..1 (0 = shut down)
+  flaps: number; // commanded 0..1
+  gearDown: boolean;
+  brakes: number; // 0..1 toe brakes
+  parkingBrake: boolean;
+  tiller: number; // -1..1 nose wheel steering
+  bombDoors: number; // 0..1 commanded
+}
+
+export interface EngineState {
+  rpm: number;
+  map: number; // inHg
+  thrust: number; // N
+}
+
+export interface JetState {
+  n: number; // spool 0..1 (fraction of max thrust)
+  rpmPct: number;
+  egt: number;
+  fuelPress: number;
+  oilPress: number;
+  thrust: number;
+}
+
+export interface Readout {
+  ias_mph: number;
+  tas_mps: number;
+  alt_ft: number;
+  agl_ft: number;
+  vs_fpm: number;
+  heading_deg: number;
+  pitch_deg: number;
+  roll_deg: number;
+  turn_rate: number; // 1 = 4-minute (1.5 deg/s) turn
+  alpha_deg: number;
+  beta_deg: number;
+  rpm_avg: number;
+  map_avg: number;
+  onGround: boolean;
+  [k: string]: number | boolean;
+}
+
+export function defaultControls(): Controls {
+  return {
+    elevator: 0, aileron: 0, rudder: 0, trim: 0,
+    throttle: [0, 0, 0, 0, 0, 0], jetThrottle: [0, 0, 0, 0],
+    flaps: 0, gearDown: true, brakes: 0, parkingBrake: true, tiller: 0, bombDoors: 0,
+  };
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const MPS_TO_MPH = 2.236936;
+const M_TO_FT = 3.28084;
+
+export class FlightModel {
+  readonly p: AircraftParams;
+  mass: number;
+  inertia: Vector3;
+  pos = new Vector3(); // CG, world
+  vel = new Vector3(); // world
+  quat = new Quaternion(); // body -> world
+  omega = new Vector3(); // body rates (x = pitch up, y = yaw left, z = roll left)
+  controls: Controls = defaultControls();
+  pistons: EngineState[];
+  jets: JetState[];
+  flapPos = 0;
+  gearPos = 1; // 1 = down and locked
+  bombDoorPos = 0;
+  time = 0;
+  readout: Readout;
+  private cg: Vector3;
+  private lastHeading = 0;
+  private headingRate = 0;
+
+  constructor(params: AircraftParams = AIRCRAFT, mass = params.massDefault) {
+    this.p = params;
+    this.mass = mass;
+    this.cg = new Vector3(...params.cg);
+    this.inertia = new Vector3(
+      mass * params.rgPitch * params.rgPitch, // about x (pitch)
+      mass * params.rgYaw * params.rgYaw, // about y (yaw)
+      mass * params.rgRoll * params.rgRoll, // about z (roll)
+    );
+    this.pistons = Array.from({ length: params.piston.count }, () => ({ rpm: 0, map: 29.9, thrust: 0 }));
+    this.jets = Array.from({ length: params.jet.count }, () => ({ n: 0, rpmPct: 0, egt: 20, fuelPress: 0, oilPress: 0, thrust: 0 }));
+    this.readout = {} as Readout;
+    this.placeOnGround(new Vector3(0, 0, 0), 0);
+    this.updateReadout(0);
+  }
+
+  /** Model-origin offset from CG in body coords (render the model at pos + quat * modelOffset). */
+  get modelOffset(): Vector3 {
+    return this.cg.clone().negate();
+  }
+
+  placeOnGround(at: Vector3, headingDeg: number) {
+    const gearBottom = this.p.gear[0].pos[1] - this.cg.y;
+    this.pos.set(at.x, -gearBottom - 0.25, at.z);
+    this.quat.setFromAxisAngle(new Vector3(0, 1, 0), (-headingDeg * Math.PI) / 180);
+    this.vel.set(0, 0, 0);
+    this.omega.set(0, 0, 0);
+    this.gearPos = 1;
+    this.controls.gearDown = true;
+  }
+
+  /** Level-flight trim (clean): angle of attack and elevator trim setting for weight at speed. */
+  trimFor(altM: number, speedMps: number) {
+    const p = this.p;
+    const air = atmosphere(altM);
+    const qbar = 0.5 * air.density * speedMps * speedMps;
+    const cl = (this.mass * G0) / (qbar * p.wingArea);
+    const alpha = (cl - p.cl0) / p.clAlpha;
+    const elev = (p.cm0 + p.cmAlpha * alpha) / p.cmElevator; // rad, from Cm = 0
+    return { alpha, cl, trim: clamp(elev / p.trimMax, -1, 1), elevRad: elev };
+  }
+
+  placeInFlight(altM: number, speedMps: number, headingDeg: number) {
+    const t = this.trimFor(altM, speedMps);
+    this.pos.set(0, altM, 0);
+    const yaw = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), (-headingDeg * Math.PI) / 180);
+    const pitch = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), t.alpha);
+    this.quat.copy(yaw).multiply(pitch);
+    this.vel.set(0, 0, -speedMps).applyQuaternion(yaw);
+    this.omega.set(0, 0, 0);
+    this.gearPos = 0;
+    this.controls.gearDown = false;
+    this.controls.parkingBrake = false;
+    this.controls.trim = t.trim;
+    this.controls.elevator = (t.elevRad - t.trim * this.p.trimMax) / this.p.elevatorMax;
+    return t;
+  }
+
+  step(dt: number, substeps = 4) {
+    const h = dt / substeps;
+    for (let i = 0; i < substeps; i++) this.integrate(h);
+    this.updateReadout(dt);
+  }
+
+  // ---------------------------------------------------------------- systems
+
+  private updateSystems(dt: number, air: ReturnType<typeof atmosphere>, V: number) {
+    const p = this.p;
+    const c = this.controls;
+    const flapRate = 1 / 25; // full travel in ~25 s (ESTIMATED)
+    this.flapPos += clamp(c.flaps - this.flapPos, -flapRate * dt, flapRate * dt);
+    const gearRate = 1 / 15; // ESTIMATED
+    this.gearPos = clamp(this.gearPos + (c.gearDown ? 1 : -1) * gearRate * dt, 0, 1);
+    this.bombDoorPos += clamp(c.bombDoors - this.bombDoorPos, -dt / 4, dt / 4);
+
+    const pp = p.piston;
+    const area = Math.PI * (pp.propDiameter / 2) ** 2;
+    const crit = atmosphere(pp.criticalAltitude).density;
+    const altFactor = air.density >= crit ? 1 : air.density / crit;
+    this.pistons.forEach((e, i) => {
+      const thr = clamp(c.throttle[i] ?? 0, 0, 1);
+      const rpmTarget = pp.rpmIdle + (pp.rpmMax - pp.rpmIdle) * Math.sqrt(thr);
+      e.rpm += (rpmTarget - e.rpm) * (1 - Math.exp(-dt / pp.spoolTau));
+      const power = pp.powerTakeoff * (0.04 + 0.96 * thr) * altFactor * clamp((e.rpm - 300) / (pp.rpmMax - 300), 0, 1);
+      e.map = 15 + 37 * thr * Math.min(1, altFactor * 1.05);
+      const tDyn = (pp.propEtaMax * power) / Math.max(V, 1);
+      const tStatic = pp.staticFigureOfMerit * Math.cbrt(2 * air.density * area * power * power);
+      e.thrust = Math.min(tDyn, tStatic);
+    });
+
+    const jp = p.jet;
+    this.jets.forEach((j, i) => {
+      const thr = clamp(c.jetThrottle[i] ?? 0, 0, 1);
+      const running = thr > 0.01;
+      const target = running ? 0.12 + 0.88 * thr : 0;
+      const tau = target > j.n ? jp.spoolUpTau : jp.spoolDownTau;
+      j.n += (target - j.n) * (1 - Math.exp(-dt / tau));
+      j.rpmPct = running ? 45 + 55 * Math.sqrt(j.n) : 100 * j.n;
+      j.egt = 20 + (running ? 380 + 300 * j.n : 0);
+      j.fuelPress = running ? 150 + 650 * j.n : 0;
+      j.oilPress = j.rpmPct > 5 ? 20 + 25 * (j.rpmPct / 100) : 0;
+      const mach = V / air.soundSpeed;
+      j.thrust = jp.thrustMax * j.n * Math.pow(air.sigma, 0.85) * (1 - 0.12 * mach);
+    });
+  }
+
+  // ---------------------------------------------------------------- dynamics
+
+  private integrate(dt: number) {
+    const p = this.p;
+    const c = this.controls;
+    const air = atmosphere(this.pos.y);
+    const qInv = this.quat.clone().invert();
+    const vb = this.vel.clone().applyQuaternion(qInv);
+    const V = vb.length();
+    this.updateSystems(dt, air, V);
+
+    const F = new Vector3(); // body forces
+    const M = new Vector3(); // body moments (x pitch up, y yaw left, z roll left)
+
+    // --- aerodynamics
+    if (V > 1) {
+      const u = -vb.z;
+      const alpha = Math.atan2(-vb.y, Math.max(u, 0.1));
+      const beta = Math.asin(clamp(vb.x / V, -1, 1));
+      const qbar = 0.5 * air.density * V * V;
+      const S = p.wingArea;
+      const b = p.span;
+      const cbar = p.mac;
+      const f = this.flapPos;
+      const aStall = ((p.alphaStallDeg - 1.5 * f) * Math.PI) / 180;
+      const clMax = p.clMaxClean + (p.clMaxFlaps - p.clMaxClean) * f;
+      let CL = p.cl0 + p.clAlpha * alpha + p.clFlaps * f;
+      let cdStall = 0;
+      if (alpha > aStall) {
+        CL = clMax - 2.2 * (alpha - aStall);
+        CL = Math.max(CL, 0.55 * clMax);
+        cdStall = 1.2 * Math.sin(alpha - aStall) ** 2;
+      } else {
+        CL = Math.min(CL, clMax);
+      }
+      if (alpha < -0.25) {
+        CL = Math.max(CL, -0.8);
+        cdStall = 1.2 * Math.sin(alpha + 0.25) ** 2;
+      }
+      const k = 1 / (Math.PI * p.oswald * p.aspectRatio);
+      const CD = p.cd0 + p.cdFlaps * f + p.cdGear * this.gearPos + p.cdBombDoors * this.bombDoorPos + k * CL * CL + cdStall;
+      const CY = p.cyBeta * beta;
+
+      const vhat = vb.clone().divideScalar(V);
+      const vPlane = new Vector3(0, vb.y, vb.z).normalize();
+      const liftDir = new Vector3(1, 0, 0).cross(vPlane);
+      F.addScaledVector(liftDir, qbar * S * CL);
+      F.addScaledVector(vhat, -qbar * S * CD);
+      F.x += qbar * S * CY;
+
+      const Vr = Math.max(V, 25);
+      const qRate = this.omega.x; // pitch up
+      const pRate = -this.omega.z; // roll right
+      const rRate = -this.omega.y; // yaw right
+      const elev = c.elevator * p.elevatorMax + c.trim * p.trimMax;
+      const ail = c.aileron * p.aileronMax;
+      const rud = c.rudder * p.rudderMax;
+      const Cm = p.cm0 + p.cmAlpha * alpha - p.cmElevator * elev + (p.cmQ * qRate * cbar) / (2 * Vr) + p.cmFlaps * f;
+      const Cl = p.clBeta * beta + (p.clP * pRate * b) / (2 * Vr) + (p.clR * rRate * b) / (2 * Vr) + p.clAileron * ail;
+      const Cn = p.cnBeta * beta + (p.cnR * rRate * b) / (2 * Vr) + (p.cnP * pRate * b) / (2 * Vr)
+        + Math.abs(p.cnRudder) * rud + p.cnAileron * ail;
+      M.x += qbar * S * cbar * Cm;
+      M.z -= qbar * S * b * Cl;
+      M.y -= qbar * S * b * Cn;
+    }
+
+    // --- engines (thrust along -z body, applied at engine positions relative to the CG)
+    const fwd = new Vector3(0, 0, -1);
+    const addForceAt = (force: Vector3, at: Vector3) => {
+      F.add(force);
+      M.add(at.clone().cross(force));
+    };
+    this.pistons.forEach((e, i) => {
+      addForceAt(fwd.clone().multiplyScalar(e.thrust), new Vector3(p.piston.x[i], 0.5 - this.cg.y, 2.0 - this.cg.z));
+    });
+    this.jets.forEach((j, i) => {
+      addForceAt(fwd.clone().multiplyScalar(j.thrust), new Vector3(p.jet.x[i], -1.8 - this.cg.y, 2.0 - this.cg.z));
+    });
+
+    // --- gravity (world) and ground contact
+    const Fw = F.clone().applyQuaternion(this.quat);
+    Fw.y -= this.mass * G0;
+    const Mw = new Vector3();
+    this.groundContact(Fw, Mw, dt);
+    M.add(Mw.applyQuaternion(qInv));
+
+    // --- integrate
+    this.vel.addScaledVector(Fw, dt / this.mass);
+    this.pos.addScaledVector(this.vel, dt);
+    const I = this.inertia;
+    const w = this.omega;
+    const Iw = new Vector3(w.x * I.x, w.y * I.y, w.z * I.z);
+    const gyro = w.clone().cross(Iw);
+    w.x += ((M.x - gyro.x) / I.x) * dt;
+    w.y += ((M.y - gyro.y) / I.y) * dt;
+    w.z += ((M.z - gyro.z) / I.z) * dt;
+    const dq = new Quaternion(w.x * dt * 0.5, w.y * dt * 0.5, w.z * dt * 0.5, 0);
+    const qn = this.quat.clone().multiply(dq);
+    this.quat.set(this.quat.x + qn.x, this.quat.y + qn.y, this.quat.z + qn.z, this.quat.w + qn.w).normalize();
+    this.time += dt;
+  }
+
+  private groundContact(Fw: Vector3, Mw: Vector3, dt: number) {
+    const p = this.p;
+    const c = this.controls;
+    const omegaW = this.omega.clone().applyQuaternion(this.quat);
+    const up = new Vector3(0, 1, 0);
+    const legs = this.gearPos > 0.98
+      ? p.gear.map((g) => ({ ...g, k: p.gearK, cd: p.gearC, wheel: true }))
+      : [
+        // gear not locked: fuselage/belly and nacelle contacts (sliding)
+        { name: "belly_f", pos: [0, -1.85, -14] as const, steer: false, k: p.gearK * 2, cd: p.gearC * 2, wheel: false },
+        { name: "belly_a", pos: [0, -1.6, 6] as const, steer: false, k: p.gearK * 2, cd: p.gearC * 2, wheel: false },
+      ];
+    let onGround = false;
+    for (const leg of legs) {
+      const rb = new Vector3(leg.pos[0], leg.pos[1], leg.pos[2]).sub(this.cg);
+      const rw = rb.clone().applyQuaternion(this.quat);
+      const pw = this.pos.clone().add(rw);
+      const pen = -pw.y;
+      if (pen <= 0) continue;
+      onGround = true;
+      const vp = this.vel.clone().add(omegaW.clone().cross(rw));
+      const N = Math.max(0, leg.k * pen - leg.cd * vp.y);
+      const force = up.clone().multiplyScalar(N);
+      // wheel axes on the ground plane
+      let heading = new Vector3(0, 0, -1).applyQuaternion(this.quat).setY(0).normalize();
+      if (leg.steer) {
+        const steer = c.tiller * p.noseSteerMax + c.rudder * p.pedalSteerMax;
+        heading = heading.applyAxisAngle(up, -steer);
+      }
+      const side = new Vector3().crossVectors(heading, up).normalize();
+      const vLong = vp.dot(heading);
+      const vLat = vp.dot(side);
+      let mu = leg.wheel ? p.rollFriction : 0.5;
+      if (leg.wheel && !leg.steer) mu += p.brakeFriction * Math.max(c.brakes, c.parkingBrake ? 1 : 0);
+      force.addScaledVector(heading, -mu * N * Math.tanh(vLong / 0.3));
+      const muLat = leg.wheel ? p.lateralFriction : 0.5;
+      force.addScaledVector(side, -muLat * N * Math.tanh(vLat / 0.3));
+      Fw.add(force);
+      Mw.add(rw.clone().cross(force));
+    }
+    this.readout.onGround = onGround;
+    void dt;
+  }
+
+  // ---------------------------------------------------------------- readout
+
+  private updateReadout(dt: number) {
+    const r = this.readout;
+    const air = atmosphere(this.pos.y);
+    const qInv = this.quat.clone().invert();
+    const vb = this.vel.clone().applyQuaternion(qInv);
+    const V = vb.length();
+    const fwd = new Vector3(0, 0, -1).applyQuaternion(this.quat);
+    const right = new Vector3(1, 0, 0).applyQuaternion(this.quat);
+    const upB = new Vector3(0, 1, 0).applyQuaternion(this.quat);
+    const heading = ((Math.atan2(fwd.x, -fwd.z) * 180) / Math.PI + 360) % 360;
+    if (dt > 0) {
+      let dh = heading - this.lastHeading;
+      if (dh > 180) dh -= 360;
+      if (dh < -180) dh += 360;
+      this.headingRate += (dh / dt - this.headingRate) * Math.min(1, dt * 3);
+    }
+    this.lastHeading = heading;
+    const gearBottom = this.p.gear[0].pos[1] - this.cg.y;
+    r.ias_mph = V * Math.sqrt(air.sigma) * MPS_TO_MPH;
+    r.tas_mps = V;
+    r.alt_ft = this.pos.y * M_TO_FT;
+    r.agl_ft = Math.max(0, (this.pos.y + gearBottom) * M_TO_FT);
+    r.vs_fpm = this.vel.y * M_TO_FT * 60;
+    r.heading_deg = heading;
+    r.pitch_deg = (Math.asin(clamp(fwd.y, -1, 1)) * 180) / Math.PI;
+    r.roll_deg = (Math.atan2(-right.y, upB.y) * 180) / Math.PI;
+    r.turn_rate = clamp(this.headingRate / 1.5, -1.5, 1.5);
+    r.alpha_deg = (Math.atan2(-vb.y, Math.max(-vb.z, 0.1)) * 180) / Math.PI;
+    r.beta_deg = V > 1 ? (Math.asin(clamp(vb.x / V, -1, 1)) * 180) / Math.PI : 0;
+    r.rpm_avg = this.pistons.reduce((a, e) => a + e.rpm, 0) / this.pistons.length;
+    r.map_avg = this.pistons.reduce((a, e) => a + e.map, 0) / this.pistons.length;
+    this.jets.forEach((j, i) => {
+      r[`jet${i + 1}_rpm`] = j.rpmPct;
+      r[`jet${i + 1}_egt`] = j.egt;
+      r[`jet${i + 1}_fuel`] = j.fuelPress;
+      r[`jet${i + 1}_oil`] = j.oilPress;
+    });
+    const now = new Date();
+    r.clock_h = (now.getHours() % 12) + now.getMinutes() / 60;
+    r.clock_m = now.getMinutes() + now.getSeconds() / 60;
+    r.flap_pos = this.flapPos;
+    r.gear_pos = this.gearPos;
+  }
+}

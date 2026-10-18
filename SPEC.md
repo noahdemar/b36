@@ -82,6 +82,17 @@ Implementation:
 - Flight model in the client: 6DOF rigid body, aero coefficients derived from published
   performance (each tagged in code as DERIVED/ESTIMATED), validated by scripted tests.
 
+Status (2026-10-18): first playable pilot station.
+- Run: `cd web && npm install && npm run dev`, open the printed URL. Keys: H shows the help panel.
+- Flight model: web/src/sim/. `node --experimental-strip-types src/sim/perf_test.ts` checks
+  performance vs published figures (vmax 435 mph = pub 435; ceiling 45,600 ft vs pub 43,600; SL climb
+  2,457 ft/min at 262,500 lb vs pub 1,995, condition unstated). `stability_test.ts` checks
+  hands-off and control response.
+- Verified in headless Chromium: loads both GLBs, cockpit renders, scripted takeoff, picking/drag of
+  throttles and the gear lever.
+- Known gaps: seats and controls are low-poly; interior lighting is flat (no baked AO); no panel
+  lighting at night; tiller and trim are wired but not tuned; jets have no start sequence.
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part

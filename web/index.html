@@ -3,14 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>B-36 Viewer</title>
+    <title>B-36 Flight Deck</title>
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #8aa4c0; font-family: system-ui, sans-serif; }
-      #info { position: fixed; left: 12px; bottom: 10px; color: #fff; font-size: 13px; text-shadow: 0 1px 2px #000; }
+      #hud { position: fixed; left: 12px; top: 10px; color: #f2f0e8; font: 13px/1.5 ui-monospace, monospace; white-space: pre; text-shadow: 0 1px 2px #000; pointer-events: none; }
+      #help { position: fixed; right: 12px; top: 10px; color: #eee; background: rgba(10, 12, 14, 0.72); padding: 10px 12px; border-radius: 6px; font-size: 12px; pointer-events: none; }
+      #help td { padding: 1px 8px 1px 0; vertical-align: top; }
+      #help td:first-child { color: #ffd27a; white-space: nowrap; }
+      #label { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); color: #fff; font-size: 13px; background: rgba(0, 0, 0, 0.55); padding: 4px 10px; border-radius: 4px; pointer-events: none; }
+      #label:empty { display: none; }
+      #yoke { position: fixed; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid #ffd27a; border-radius: 50%; pointer-events: none; display: none; }
+      #loading { position: fixed; inset: 0; display: grid; place-items: center; color: #fff; font-size: 15px; pointer-events: none; }
     </style>
   </head>
   <body>
-    <div id="info">Loading model...</div>
+    <div id="hud"></div>
+    <div id="help"></div>
+    <div id="label"></div>
+    <div id="yoke"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

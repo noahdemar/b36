@@ -60,6 +60,11 @@ def frame_from(origin, x_axis, y_axis):
     return Matrix(((x.x, y.x, z.x, o.x), (x.y, y.y, z.y, o.y), (x.z, y.z, z.z, o.z), (0, 0, 0, 1)))
 
 
+def upframe(origin, fwd=(0, 1, 0)):
+    """Control frame: local X right, Y forward, Z up (so +rotation about X moves the top aft)."""
+    return frame_from(origin, (1, 0, 0), fwd)
+
+
 def box(mb, frame, x0, x1, y0, y1, z0, z1, mat):
     """Box in a local frame (Matrix), outward normals."""
     c = [frame @ Vector((x, y, z)) for z in (z0, z1) for y in (y0, y1) for x in (x0, x1)]
@@ -439,10 +444,10 @@ def build_pedals(side, sx):
     for ps, off in (("L", -0.16), ("R", 0.16)):
         x = sx * SEAT_X + off
         pivot = W(x, 3.72, 0.62)
-        f = frame_from(pivot, (1, 0, 0), (0, 0, 1))
+        f = upframe(pivot)
         mb = MeshBuilder()
-        tube(mb, Vector((0, 0, 0)), Vector((0, -0.06, -0.26)), 0.015, seg=8, mat="seatframe")
-        box(mb, frame_from(Vector((0, -0.08, -0.25)), (1, 0, 0), (0, 0.45, 1)), -0.06, 0.06, -0.012, 0.012, -0.11, 0.05, "panel")
+        tube(mb, Vector((0, 0, 0)), Vector((0, -0.04, -0.26)), 0.015, seg=8, mat="seatframe")
+        box(mb, frame_from(Vector((0, -0.06, -0.25)), (1, 0, 0), (0, 1, 0.45)), -0.06, 0.06, -0.012, 0.012, -0.11, 0.05, "panel")
         ctl(f"Pedal_{side}_{ps}", mb, f, "pedal", (1, 0, 0), -0.25, 0.25, seat=side, side=ps)
 
 
@@ -472,7 +477,7 @@ def build_pedestal(uv):
     for k in range(6):
         x = -0.15 + 0.06 * k
         pivot = W(x, 4.06, 0.58)
-        fr = frame_from(pivot, (1, 0, 0), (0, 0, 1))
+        fr = upframe(pivot)
         lm = MeshBuilder()
         tube(lm, Vector((0, 0, 0)), Vector((0, 0, 0.30)), 0.010, seg=8, mat="chrome")
         tube(lm, Vector((-0.022, 0, 0.30)), Vector((0.022, 0, 0.30)), 0.014, seg=10, mat="knob")  # T handle
@@ -483,19 +488,19 @@ def build_pedestal(uv):
     gm = MeshBuilder()
     tube(gm, Vector((0, 0, 0)), Vector((0, 0, 0.12)), 0.008, seg=8, mat="chrome")
     revolve(gm, lambda t: Vector((0, t, 0.13)), [(-0.012, 0.025), (0.012, 0.025)], seg=16, axis="y", mat="knob", cap_start=True, cap_end=True)
-    ctl("Gear_Lever", gm, frame_from(W(0.19, 3.80, 0.70), (1, 0, 0), (0, 0, 1)), "gear", (1, 0, 0), -0.5, 0.5, kind="toggle")
+    ctl("Gear_Lever", gm, upframe(W(0.19, 3.80, 0.70)), "gear", (1, 0, 0), -0.5, 0.5, kind="toggle")
     fm = MeshBuilder()
     tube(fm, Vector((0, 0, 0)), Vector((0, 0, 0.06)), 0.006, seg=8, mat="chrome")
     tube(fm, Vector((0, 0, 0.055)), Vector((0, 0, 0.075)), 0.011, seg=10, mat="knob")
-    ctl("Flap_Switch", fm, frame_from(W(0.19, 4.0, 0.685), (1, 0, 0), (0, 0, 1)), "flaps", (1, 0, 0), -0.4, 0.4, kind="switch3")
+    ctl("Flap_Switch", fm, upframe(W(0.19, 4.0, 0.685)), "flaps", (1, 0, 0), -0.4, 0.4, kind="switch3")
     bm = MeshBuilder()
     tube(bm, Vector((0, 0, 0)), Vector((0, 0, 0.07)), 0.007, seg=8, mat="chrome")
     tube(bm, Vector((-0.02, 0, 0.07)), Vector((0.02, 0, 0.07)), 0.012, seg=10, mat="knob_red")
-    ctl("Brake_Handle", bm, frame_from(W(-0.19, 3.80, 0.70), (1, 0, 0), (0, 0, 1)), "parking_brake", (1, 0, 0), -0.5, 0.5, kind="toggle")
+    ctl("Brake_Handle", bm, upframe(W(-0.19, 3.80, 0.70)), "parking_brake", (1, 0, 0), -0.5, 0.5, kind="toggle")
     # Elevator trim wheel on the pedestal's left side
     tm = MeshBuilder()
     revolve(tm, lambda t: Vector((t, 0, 0)), [(-0.015, 0.10), (0.015, 0.10)], seg=32, axis="x", mat="knob", cap_start=True, cap_end=True)
-    ctl("Trim_Elevator", tm, frame_from(W(-0.255, 4.35, 0.52), (1, 0, 0), (0, 0, 1)), "trim_elevator", (1, 0, 0), -6.0, 6.0, kind="wheel")
+    ctl("Trim_Elevator", tm, upframe(W(-0.255, 4.35, 0.52)), "trim_elevator", (1, 0, 0), -6.0, 6.0, kind="wheel")
 
 
 def build_overhead():
@@ -510,7 +515,7 @@ def build_overhead():
     for k in range(4):
         x = -0.15 + 0.10 * k
         pivot = W(x, 4.0, 2.06)
-        fr = frame_from(pivot, (1, 0, 0), (0, 0, 1))
+        fr = upframe(pivot)
         lm = MeshBuilder()
         tube(lm, Vector((0, 0, 0)), Vector((0, 0, -0.17)), 0.009, seg=8, mat="chrome")
         tube(lm, Vector((-0.02, 0, -0.17)), Vector((0.02, 0, -0.17)), 0.013, seg=10, mat="knob")
@@ -558,7 +563,7 @@ def build_consoles():
     tube(tm, Vector((0, 0, 0)), Vector((0, 0, 0.06)), 0.02, seg=10, mat="panel")
     for a in (0, 2 * math.pi / 3, 4 * math.pi / 3):
         tube(tm, Vector((0, 0, 0.06)), Vector((0.11 * math.cos(a), 0.11 * math.sin(a), 0.06)), 0.007, seg=6, mat="panel")
-    f = frame_from(W(-1.30, 3.95, 0.96), (1, 0, 0), (0, 0.3, 1))
+    f = upframe(W(-1.30, 3.95, 0.96), fwd=(0, 1, -0.3))
     ctl("Tiller", tm, f, "tiller", (0, 0, 1), -1.5, 1.5)
 
 
