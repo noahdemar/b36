@@ -51,8 +51,33 @@ export function rotatePart(p: Part | undefined, angle: number) {
 const MAX_SURFACE = THREE.MathUtils.degToRad(25);
 const MAX_FLAP = THREE.MathUtils.degToRad(40);
 
+/** Rebuild a GLB from glTF JSON whose single buffer is an embedded base64 data URI. */
+function jsonToGlb(gltf: { buffers: { uri?: string; byteLength: number }[] }): ArrayBuffer {
+  const uri = gltf.buffers[0].uri ?? "";
+  const bin = Uint8Array.from(atob(uri.slice(uri.indexOf(",") + 1)), (ch) => ch.charCodeAt(0));
+  delete gltf.buffers[0].uri;
+  const pad = (n: number) => (n + 3) & ~3;
+  const json = new TextEncoder().encode(JSON.stringify(gltf));
+  const jl = pad(json.length), bl = pad(bin.length);
+  const out = new ArrayBuffer(12 + 8 + jl + 8 + bl);
+  const dv = new DataView(out);
+  const u8 = new Uint8Array(out);
+  dv.setUint32(0, 0x46546c67, true); dv.setUint32(4, 2, true); dv.setUint32(8, out.byteLength, true);
+  dv.setUint32(12, jl, true); dv.setUint32(16, 0x4e4f534a, true);
+  u8.fill(0x20, 20, 20 + jl); u8.set(json, 20);
+  dv.setUint32(20 + jl, bl, true); dv.setUint32(24 + jl, 0x004e4942, true);
+  u8.set(bin, 28 + jl);
+  return out;
+}
+
+/** Load a .glb, or a .json glTF with an embedded buffer (used where .glb cannot be served). */
 export async function loadGltf(url: string) {
-  return (await new GLTFLoader().loadAsync(url)).scene;
+  const loader = new GLTFLoader();
+  if (url.endsWith(".json")) {
+    const gltf = await (await fetch(url)).json();
+    return (await loader.parseAsync(jsonToGlb(gltf), "")).scene;
+  }
+  return (await loader.loadAsync(url)).scene;
 }
 
 export class Aircraft {

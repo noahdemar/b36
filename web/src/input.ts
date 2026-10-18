@@ -28,11 +28,7 @@ export class KeyboardInput {
 
   constructor(target: Window = window) {
     target.addEventListener("keydown", (e) => {
-      if (e.repeat) {
-        if (e.code === "PageUp" || e.code === "PageDown" || e.code === "Equal" || e.code === "Minus" ||
-          e.code === "Home" || e.code === "End") this.pressed.push(e.code + (e.shiftKey ? "+S" : ""));
-        return;
-      }
+      if (e.repeat) return;
       this.down.add(e.code);
       this.pressed.push(e.code + (e.shiftKey ? "+S" : ""));
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space"].includes(e.code)) e.preventDefault();
@@ -70,15 +66,13 @@ export class KeyboardInput {
     c.rudder = ramp(c.rudder, this.axis(["KeyQ"], ["KeyE"]), 1.2);
     c.brakes = this.down.has("KeyB") ? 1 : 0;
 
-    const step = (codes: string[]) => pressedList.filter((k) => codes.includes(k)).length;
-    const thrUp = step(["PageUp", "Equal", "NumpadAdd"]);
-    const thrDn = step(["PageDown", "Minus", "NumpadSubtract"]);
-    const jetUp = step(["PageUp+S", "Equal+S"]);
-    const jetDn = step(["PageDown+S", "Minus+S"]);
-    if (thrUp || thrDn) c.throttle = c.throttle.map((t) => clamp01(t + 0.05 * (thrUp - thrDn)));
-    if (jetUp || jetDn) c.jetThrottle = c.jetThrottle.map((t) => clamp01(t + 0.1 * (jetUp - jetDn)));
-    const trimSteps = step(["Home", "Home+S"]) - step(["End", "End+S"]);
-    if (trimSteps) c.trim = Math.max(-1, Math.min(1, c.trim + 0.04 * trimSteps));
+    // Held keys move throttles and trim continuously (full travel in ~2.5 s), independent of key repeat.
+    const shift = this.down.has("ShiftLeft") || this.down.has("ShiftRight");
+    const thr = this.axis(["PageDown", "Minus", "NumpadSubtract"], ["PageUp", "Equal", "NumpadAdd"]);
+    if (thr && shift) c.jetThrottle = c.jetThrottle.map((t) => clamp01(t + 0.4 * thr * dt));
+    else if (thr) c.throttle = c.throttle.map((t) => clamp01(t + 0.4 * thr * dt));
+    const trim = this.axis(["End"], ["Home"]);
+    if (trim) c.trim = Math.max(-1, Math.min(1, c.trim + 0.25 * trim * dt));
     if (pressed.has("KeyG")) c.gearDown = !c.gearDown;
     if (pressed.has("KeyF")) c.flaps = clamp01(Math.round((c.flaps + 0.25) * 4) / 4);
     if (pressed.has("KeyF+S")) c.flaps = clamp01(Math.round((c.flaps - 0.25) * 4) / 4);

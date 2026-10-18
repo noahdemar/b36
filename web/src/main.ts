@@ -72,7 +72,8 @@ function setView(v: View) {
   camera.updateProjectionMatrix();
 }
 
-Promise.all([loadGltf("models/b36.glb"), loadGltf("models/b36_interior.glb")]).then(([ext, int]) => {
+const MODEL_EXT = (window as unknown as { B36_MODEL_EXT?: string }).B36_MODEL_EXT ?? "glb";
+Promise.all([loadGltf(`models/b36.${MODEL_EXT}`), loadGltf(`models/b36_interior.${MODEL_EXT}`)]).then(([ext, int]) => {
   const aircraft = new Aircraft(ext);
   const cockpit = new Cockpit(int);
   aircraftRoot.add(ext, int);
