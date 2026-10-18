@@ -7,6 +7,7 @@ import { Engineer, engineWarnings } from "./engineer";
 import { KEY_HELP, KeyboardInput } from "./input";
 import { BombingRange, RANGE_CENTER } from "./range";
 import { Autopilot } from "./sim/autopilot";
+import { bearingTo, mountDisplays, NavChart, RadarScope, WAYPOINTS } from "./stations";
 import { FlightModel } from "./sim/flightmodel";
 import { BombSystem } from "./weapons/bombs";
 import { findTurrets, GUN, lineHitsAirframe, Rounds, type Turret } from "./weapons/turrets";
@@ -38,6 +39,23 @@ const MASS0 = fm.mass;
 const ap = new Autopilot();
 const engineer = new Engineer();
 let lastStation = "";
+const chart = new NavChart();
+const scope = new RadarScope();
+let bigDisplay: "chart" | "scope" | null = null;
+let impactT = 0;
+for (const cv of [chart.canvas, scope.canvas]) {
+  cv.style.cssText = "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);display:none;z-index:5;" +
+    "border:2px solid #333;box-shadow:0 0 30px #000;";
+  document.body.appendChild(cv);
+}
+chart.canvas.style.width = "min(96vw, 1600px)";
+scope.canvas.style.width = "min(80vh, 90vw)";
+scope.canvas.style.borderRadius = "50%";
+chart.canvas.addEventListener("pointerdown", (e) => {
+  const r = chart.canvas.getBoundingClientRect();
+  const wp = chart.pick(((e.clientX - r.left) / r.width) * chart.canvas.width, ((e.clientY - r.top) / r.height) * chart.canvas.height);
+  if (wp) { chart.waypoint = wp; say(`NAVIGATOR: new mark, ${(bearingTo(fm.pos.x, fm.pos.z, wp.x, wp.z).dist / 1609.344).toFixed(1)} mi`); }
+});
 let bombs: BombSystem | null = null;
 let range: BombingRange | null = null;
 let sightView = false;
@@ -67,7 +85,7 @@ let crew: Crew | null = null;
 debugHook.camera = camera;
 debugHook.scene = scene;
 const eyeLocal = new THREE.Vector3();
-const FUNCTIONAL = new Set(["radar_observer", "flight_engineer"]);
+const FUNCTIONAL = new Set(["radar_observer", "flight_engineer", "navigator"]);
 const isGunner = (station: string) => station.startsWith("gunner") || station === "tail_gunner";
 const STATION_NAMES: Record<string, string> = {
   aircraft_commander: "Aircraft commander", pilot: "Pilot", flight_engineer: "Flight engineer",
@@ -158,6 +176,7 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
   rounds = new Rounds(world.group);
   rounds.onGround = (p) => range!.strafe(p);
   trolley = int.getObjectByName("Tunnel_Trolley") ?? null;
+  mountDisplays(int, chart, scope);
   Object.assign(debugHook, { bombs, range, ap, aircraftRoot, world, turrets, rounds });
   crew = new Crew(nav);
   crew.sit("Seat_AC");
@@ -209,6 +228,8 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       if (it?.kind === "seat") {
         cr.sit(it.seat.name);
         if (it.seat.sight && it.seat.station !== "radar_observer") { cr.yaw = 0; cr.pitch = it.seat.station.includes("lower") ? -0.35 : 0.1; }
+        if (it.seat.station === "navigator") { cr.yaw = 0; cr.pitch = -0.75; }
+        if (it.seat.station === "radar_observer") { cr.yaw = 0; cr.pitch = -0.45; }
       } else if (it?.kind === "ladder") cr.useLadder(it.ladder);
       else if (it?.kind === "tunnel") cr.useTunnel(it.tunnel, it.end);
     }
@@ -241,6 +262,35 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       const m = engineer.update(fm, input, pressedList, dt);
       if (m) say(m);
     }
+    // navigator: waypoints, chart scale, autopilot coupling
+    if (station === "navigator") {
+      for (const [k, i] of [["Digit1", 0], ["Digit2", 1], ["Digit3", 2]] as const) {
+        if (pressed.has(k)) { chart.waypoint = WAYPOINTS[i]; say(`NAVIGATOR: course to ${chart.waypoint.name}`); }
+      }
+      if (pressed.has("PageUp")) chart.zoom(-1);
+      if (pressed.has("PageDown")) chart.zoom(1);
+      if (pressed.has("KeyV")) bigDisplay = bigDisplay === "chart" ? null : "chart";
+      if (pressed.has("Enter")) {
+        chart.coupled = !chart.coupled;
+        if (chart.coupled && !ap.engaged) ap.engage(fm);
+        say(chart.coupled ? `AUTOPILOT COUPLED: steering to ${chart.waypoint.name}` : "AUTOPILOT UNCOUPLED from the navigator");
+      }
+    }
+    if (chart.coupled) {
+      const w = bearingTo(fm.pos.x, fm.pos.z, chart.waypoint.x, chart.waypoint.z);
+      if (!ap.engaged) chart.coupled = false;
+      else if (w.dist < 1500) { chart.coupled = false; say(`NAVIGATOR: over ${chart.waypoint.name}, holding heading`); }
+      else ap.headingDeg = w.brg;
+    }
+    // radar observer: scope range and gain (the bombsight keys stay as they are)
+    if (station === "radar_observer" && !noseGuns) {
+      if (pressed.has("KeyB")) bigDisplay = bigDisplay === "scope" ? null : "scope";
+      if (pressed.has("PageUp")) scope.setRange(1);
+      if (pressed.has("PageDown")) scope.setRange(-1);
+      if (input.isDown("BracketRight")) scope.gain = Math.min(1, scope.gain + 0.4 * dt);
+      if (input.isDown("BracketLeft")) scope.gain = Math.max(0, scope.gain - 0.4 * dt);
+    }
+    if ((bigDisplay === "chart" && station !== "navigator") || (bigDisplay === "scope" && (station !== "radar_observer" || noseGuns))) bigDisplay = null;
     if (pressed.has("KeyN")) startBombRun();
     // autopilot: Z from the pilot seats or the bombardier; yoke input disengages it
     if (pressed.has("KeyZ") && (flying() || atStation("radar_observer"))) {
@@ -332,6 +382,17 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     }
     range?.update(dt);
     crewMsgT -= dt;
+    const nearDisplays = view === "inside" && cr.deck.id === "lower";
+    impactT -= dt;
+    if (bombs && impactT <= 0 && nearDisplays) {
+      impactT = 0.25;
+      const from = bombs.nextReleasePoint(fm, aircraftRoot.matrixWorld);
+      scope.impact = from ? (({ point }) => ({ x: point.x, z: point.z }))(BombSystem.predict(fm, from)) : null;
+    }
+    chart.update(fm, range, dt, nearDisplays || bigDisplay === "chart");
+    scope.update(fm, range, dt, nearDisplays || bigDisplay === "scope");
+    chart.canvas.style.display = bigDisplay === "chart" ? "block" : "none";
+    scope.canvas.style.display = bigDisplay === "scope" ? "block" : "none";
 
     // Aircraft pose with floating origin: CG stays at x = z = 0.
     const off = fm.modelOffset.applyQuaternion(fm.quat);
@@ -414,6 +475,8 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
           : "") +
         (sightNow ? gunnerStatus(sightNow.turrets) : "") +
         (atStation("flight_engineer") ? engineer.status(fm) : engineWarnings(fm)) +
+        (atStation("navigator") ? navStatus() : "") +
+        (atStation("radar_observer") && !noseGuns ? `\nRADAR ${scope.rangeMi} MI  GAIN ${(scope.gain * 100).toFixed(0)}   B scope view  PgUp/PgDn range  [ ] gain  (yellow cross: bomb impact)` : "") +
         (crewMsgT > 0 ? `\n${crewMsg}` : "") +
         (range && range.log.length ? `\n${range.log[0]}` : "");
     }
@@ -427,6 +490,13 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     impactEl.style.display = sightView ? "block" : "none";
   });
 });
+
+function navStatus(): string {
+  const i = chart.info(fm);
+  return `\nNAV  ${chart.waypoint.name}: ${i.brg.toFixed(0).padStart(3, "0")} deg, ${(i.dist / 1609.344).toFixed(1)} mi, ETE ${isFinite(i.ete) ? (i.ete / 60).toFixed(1) + " min" : "-"}` +
+    `   ${chart.coupled ? "AUTOPILOT COUPLED" : ""}` +
+    "\n1 base  2 IP  3 target  (or click the chart in V view)   Enter couple autopilot   PgUp/PgDn chart scale   V chart view";
+}
 
 function gunnerStatus(names: string[]): string {
   const ts = names.map((n) => turrets.get(n)).filter((t): t is Turret => !!t);

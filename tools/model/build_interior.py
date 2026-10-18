@@ -701,8 +701,13 @@ def build_lower_deck():
     mb = MeshBuilder()
     # Radar observer / bombing console with scope, facing aft toward the seat
     wbox(mb, -0.55, 0.55, 3.55, 4.10, lf, lf + 1.05, "panel")
-    disc(mb, frame_from(W(0, 4.101, lf + 0.80), (1, 0, 0), (0, 0, 1)) @ Matrix.Rotation(math.pi / 2, 4, "X"), 0.16, 0.0,
-         mat="radome", seg=32)
+    # APS-23 scope: dark face (the client draws the PPI on it) in a hooded bezel
+    sf = frame_from(W(0, 4.101, lf + 0.80), (1, 0, 0), (0, 0, 1))
+    disc(mb, sf, 0.16, 0.0, mat="panel", seg=32)
+    annulus(mb, sf, 0.155, 0.19, 0.035, "chrome", seg=32)
+    hood = [[sf @ Vector((0.19 * math.cos(2 * math.pi * k / 32), 0.19 * math.sin(2 * math.pi * k / 32), z)) for k in range(17)]
+            for z in (0.0, 0.09)]
+    mb.loft(hood, closed=False, mat="panel")
     wbox(mb, -0.50, 0.50, 4.10, 4.35, lf + 0.62, lf + 0.66, "panel")   # desk lip
     obstacle("radar_console", -0.55, 0.55, 3.55, 4.35, lf, lf + 1.05)
     # Navigator's table on the left wall

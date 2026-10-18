@@ -137,6 +137,40 @@ Order of work:
    start, CHT / oil temp model, fuel tanks and consumption.
 6. Navigator chart with live position; APS-23 radar scope for the radar observer.
 
+Status (2026-10-18): steps 1-6 done; all six have headless tests or browser checks.
+
+### Engine management (web/src/sim/powerplant.ts, test: src/sim/engine_test.ts)
+- Per engine: running / failed, starter (cranks to 280 rpm, catches after 3 s with ignition, mixture
+  not cutoff and fuel), rpm lever 1200-2700 (governor), turbo boost selector (critical altitude
+  1,500 m at 0 to 10,700 m at 1), mixture cutoff / auto-lean / auto-rich, cowl flaps, feathering,
+  windmilling drag when stopped. Power law is the fitted one from perf_test times these factors, so
+  published performance is unchanged at default settings (re-measured: 435 mph at 36,089 ft).
+- CHT and oil temperature are first-order models (tau 60 s / 180 s) driven by power and cooling
+  (cowl flaps, airspeed); red line 260 C, failure after about 20 s above 280 C. All ESTIMATED.
+- Fuel: B-36H capacity DERIVED as 36,396 gal (B-36J) - 2,770 gal (J outer-panel tanks) = 33,626 gal;
+  6.0 lb/gal (30,600 gal = 183,600 lb). Eight wing tanks (outboard, center, inboard, aux per side,
+  split ESTIMATED) plus a bomb bay tank not fitted with bombs aboard. Fuel at combat weight DERIVED:
+  262,500 - 165,887 empty - 48,000 bombs - 3,000 crew - 6,000 stores = 39,613 lb. BSFC 0.55 rich /
+  0.45 lean, J47 TSFC 1.0 (ESTIMATED). Manifold per side with tank selector and crossfeed; fuel
+  burn lowers mass; side imbalance gives a rolling moment.
+- Automatic engineer (cowl flaps toward 215 C, tank sequencing) runs unless a player sits at the
+  FE seat; it comes back when they leave. Shift+R resets cold and dark.
+- FE panel: 6 x 5 engine gauges (rpm, MAP, CHT, oil temp, fuel flow) and two fuel quantity
+  gauges, all driven from the sim. Arrangement ESTIMATED.
+
+### Navigator and radar (web/src/stations.ts)
+- Chart on the navigator's table (CanvasTexture; V for full screen): grid, runway, range, targets,
+  track history, waypoints (base, IP, target, or click), leg data, fuel endurance and range.
+  Enter couples the autopilot heading to the waypoint.
+- APS-23 PPI on the radar console (B for full screen): heading-up, 10/25/50/100 mi, 20 rpm scan,
+  2.5 deg beam, phosphor persistence, altitude hole, noise ground clutter, dark runway, strong
+  target returns, predicted bomb impact cross for radar bombing. Scan rate, beam and ranges
+  ESTIMATED.
+
+Sources: warhistory.org/es/@msw/article/convair-b-36 (J capacity, outer tanks);
+aeroantique.com B-36H outboard wing tank gauge listing (9 tanks); armedconflicts.com/-t15718
+(B-36H empty weight); amc.af.mil Article 147245 ("more than 183,000 pounds" of fuel).
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part

@@ -40,7 +40,7 @@
   #yoke { position: fixed; z-index: 2; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid var(--amber); border-radius: 50%; pointer-events: none; display: none; }
 
   #start {
-    position: fixed; inset: 0; z-index: 5; display: grid; place-items: center;
+    position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; overflow-y: auto;
     padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
     padding-block: 24px; background: radial-gradient(ellipse at 50% 40%, rgba(13, 15, 16, 0.55), rgba(13, 15, 16, 0.92));
   }
@@ -52,6 +52,9 @@
   ol.check li { display: grid; grid-template-columns: 2.2em 1fr auto; gap: 8px; align-items: baseline; border-bottom: 1px dotted var(--line); padding-bottom: 5px; counter-increment: c; font-size: 14px; }
   ol.check li::before { content: counter(c); font: 600 12px var(--mono); color: var(--dim); }
   ol.check kbd { font: 600 12px var(--mono); color: var(--amber); white-space: nowrap; }
+  ul.stations { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  ul.stations li { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: baseline; border-bottom: 1px dotted var(--line); padding-bottom: 5px; font-size: 13px; }
+  ul.stations kbd { font: 600 12px var(--mono); color: var(--amber); white-space: nowrap; }
   .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   button#go {
     font: 600 15px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
@@ -83,9 +86,18 @@
       <li><span>Rotate at 140 mph, hold about 8 degrees nose up</span><kbd>S / Down</kbd></li>
       <li><span>Gear up once climbing</span><kbd>G</kbd></li>
     </ol>
-    <p class="note">Steer with A / D (roll), Q / E (rudder), W / S (pitch), Home / End (trim). Right-drag to look around, left-click or drag cockpit levers and switches. C toggles the outside view, R resets, H shows every key. Needs a keyboard and a GPU; first load is about 7 MB.</p>
+    <p class="note">Steer with A / D (roll), Q / E (rudder), W / S (pitch), Home / End (trim). Right-drag to look around, left-click or drag cockpit levers and switches. C toggles the outside view, R resets, H shows every key. Needs a keyboard and a GPU; first load is about 13 MB.</p>
     <h2>Moving around the aircraft</h2>
-    <p class="note">X stands you up. Walk with W A S D (Shift faster, Ctrl crouch), and press E or click a seat to sit there. The ladder behind the engineer's station leads down to the navigator and radar observer on the lower deck. Only the two pilot seats fly the aircraft so far.</p>
+    <p class="note">X stands you up. Walk with W A S D (Shift faster, Ctrl crouch), and press E or click a seat to sit there. The ladder behind the engineer's station leads down to the navigator and radar observer. The tunnel above the bomb bays (entrance behind the upper forward gunners) leads to the aft compartment.</p>
+    <h2>Crew stations</h2>
+    <ul class="stations">
+      <li><span>N: start a bomb run (airborne, autopilot on, 15 km from the range)</span><kbd>N</kbd></li>
+      <li><span>Radar observer (lower deck, forward): doors O, arm K, mode M, release Space, optical sight V, radar scope B, nose guns T</span><kbd>Bombs</kbd></li>
+      <li><span>Navigator (lower deck, left): waypoints 1 2 3 or click the chart (V), Enter couples the autopilot</span><kbd>Nav</kbd></li>
+      <li><span>Flight engineer (behind the right pilot): engine select 1-6, mixture M, ignition I, starter Enter, cowl flaps [ ], tanks , . /</span><kbd>Engines</kbd></li>
+      <li><span>Gunners (forward blisters, aft compartment, tail): U extends turrets, mouse aims, hold left button to fire</span><kbd>Guns</kbd></li>
+      <li><span>Shift+R: reset cold and dark, then start the engines from the engineer's seat</span><kbd>Shift + R</kbd></li>
+    </ul>
     <div class="row">
       <button id="go" type="button" disabled>Loading aircraft</button>
     </div>
