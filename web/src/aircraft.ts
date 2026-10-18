@@ -10,14 +10,12 @@ export interface AircraftState {
   gear: number; // 0 = up, 1 = down
   bombDoors: number[]; // per bay 0..1
   propRpm: number[]; // 6 entries, engine 1 (left outboard) .. 6 (right outboard)
-  turretYaw: Record<string, number>;
-  turretPitch: Record<string, number>;
 }
 
 export function defaultAircraftState(): AircraftState {
   return {
     aileron: 0, elevator: 0, rudder: 0, flaps: 0, gear: 1,
-    bombDoors: [0, 0, 0, 0], propRpm: [0, 0, 0, 0, 0, 0], turretYaw: {}, turretPitch: {},
+    bombDoors: [0, 0, 0, 0], propRpm: [0, 0, 0, 0, 0, 0],
   };
 }
 
@@ -141,9 +139,7 @@ export class Aircraft {
       g.visible = s.gear > 0.02;
     }
 
-    for (const name of this.partNames("turret_yaw")) {
-      rotatePart(this.parts.get(name), s.turretYaw[name] ?? 0);
-      rotatePart(this.parts.get(name + "_Guns"), s.turretPitch[name] ?? 0);
-    }
+    // Turret yaw / pitch / extension are driven by weapons/turrets.ts (Turret.update), not here: writing
+    // them here every frame reset the turrets to their stowed pose after they had been aimed.
   }
 }
