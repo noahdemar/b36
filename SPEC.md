@@ -171,6 +171,40 @@ Sources: warhistory.org/es/@msw/article/convair-b-36 (J capacity, outer tanks);
 aeroantique.com B-36H outboard wing tank gauge listing (9 tanks); armedconflicts.com/-t15718
 (B-36H empty weight); amc.af.mil Article 147245 ("more than 183,000 pounds" of fuel).
 
+## Damage and interior realism (requested 2026-10-18)
+
+Decisions (confirmed): damage from flak over the target, mechanical failures, and overstress / hard
+landings / crashes (no fighters for now); component-based damage model (War Thunder style); interior
+realism pass starts with the flight deck. Requirement: the aircraft can take a beating before going down.
+
+Damage model (web/src/sim/damage.ts):
+- Components with hit points and positions in model coordinates: 6 engines, 4 jets, 9 fuel tanks,
+  wing sections (inner / outer per side), fuselage (fwd / mid / aft), fin + rudder, stabilizers +
+  elevators, ailerons, flaps, gear legs, turrets, control cables.
+- Effects: engine fire (spreads to the wing section, FE extinguisher), oil leak -> seizure, power loss;
+  tank leaks and fires; lift / drag / control effectiveness loss per section (asymmetric); cables cut;
+  gear collapse; structural failure (wing or tail separation) when a section's HP reaches 0.
+- Sources: flak batteries around the range (predicted fire with range-dependent error, fragment
+  hits by distance and part area), random failures raised by engine abuse (CHT, overspeed), load
+  factor above limit, overspeed, hard or gear-up landings, ground strikes.
+- Feedback: crew calls, FE damage panel, pilot warnings, smoke / fire trails, hole decals,
+  separated parts. Crash = destroyed; R resets.
+
+Status (2026-10-18): damage model done (web/src/sim/damage.ts, flak.ts, damagefx.ts; tests
+sim/damage_test.ts, flak_test.ts). Measured: bursts needed to lose the aircraft (20 seeds): median 9 at
+15 m, 33 at 30 m, 125 at 50 m. One pass over the range (12 runs each, flak error 30 m + 1.5% of slant
+range): 12,000 ft lost 0/12, 0.33 engines per pass, median worst part 62%; 25,000 ft 0/12, 83%;
+40,000 ft untouched. Wing tip (outboard of 28 m, through the aileron) can be shot off and the aircraft
+stays flyable (autopilot holds altitude with 0.49 aileron); main wing, center/forward fuselage or aft
+fuselage failure loses the aircraft. Limits used: 2.0 g limit / 3.0 g ultimate, 330 mph IAS Vne,
+gear 10 / 16 / 25 ft/s sink (damage / collapse / crash), all ESTIMATED. FE fire bottles: B key.
+The autopilot's pitch loop now uses low-passed alpha (it oscillated 0.2-2.0 g near the ceiling).
+
+Interior realism (tools/model/build_interior.py):
+- Flight deck first: modeled seats (frame, cushions, belts, armor), consoles with switches and
+  labeled placards, textured materials (painted metal, crackle-black panels, wear), baked ambient
+  occlusion, panel / cabin lighting; then FE station, lower deck, tunnel, aft compartment.
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part

@@ -3,6 +3,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Aircraft, defaultAircraftState, loadGltf } from "./aircraft";
 import { Cockpit, type Pickable } from "./cockpit";
 import { Crew, type NavData } from "./crew";
+import { DamageFX } from "./damagefx";
+import { Flak } from "./flak";
 import { Engineer, engineWarnings } from "./engineer";
 import { KEY_HELP, KeyboardInput } from "./input";
 import { BombingRange, RANGE_CENTER } from "./range";
@@ -19,6 +21,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.AgXToneMapping;
 renderer.toneMappingExposure = 0.85;
 renderer.shadowMap.enabled = true;
+renderer.localClippingEnabled = true; // separated structure is cut with clipping planes
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
@@ -39,6 +42,17 @@ const MASS0 = fm.mass;
 const ap = new Autopilot();
 const engineer = new Engineer();
 let lastStation = "";
+const flak = new Flak();
+let fx: DamageFX | null = null;
+let lastEvent: unknown = null;
+/** Turrets are damage components too (found on the model at load). */
+function addTurretComponents() {
+  aircraftRoot.updateMatrixWorld(true);
+  for (const t of turrets.values()) {
+    const p = aircraftRoot.worldToLocal(t.yawNode.getWorldPosition(new THREE.Vector3()));
+    fm.damage.addComponent({ id: t.name, label: t.name.replace("Turret_", "").replace(/_/g, " ") + " turret", kind: "turret", pos: p, area: 1.6, hpMax: 12 });
+  }
+}
 const chart = new NavChart();
 const scope = new RadarScope();
 let bigDisplay: "chart" | "scope" | null = null;
@@ -104,6 +118,8 @@ function resetOnRunway(cold = false) {
   bombs?.reload();
   fm.setMass(MASS0);
   fm.resetSystems(!cold);
+  fx?.reset();
+  addTurretComponents();
   fm.feAuto = fm.fuel.auto = !atStation("flight_engineer");
   fm.placeOnGround(new THREE.Vector3(0, 0, 0), 0);
   const c = fm.controls;
@@ -138,6 +154,8 @@ function startBombRun() {
   bombs?.reload();
   fm.setMass(MASS0);
   fm.resetSystems(true);
+  fx?.reset();
+  addTurretComponents();
   fm.placeInFlight(12_000 * 0.3048, 105, 0);
   fm.pos.set(RANGE_CENTER.x + 40, fm.pos.y, RANGE_CENTER.z + 15_000);
   fm.controls.throttle.fill(0.7);
@@ -177,6 +195,15 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
   rounds.onGround = (p) => range!.strafe(p);
   trolley = int.getObjectByName("Tunnel_Trolley") ?? null;
   mountDisplays(int, chart, scope);
+  fx = new DamageFX(world.group, aircraftRoot, ext);
+  flak.onBurst = (w, local, d, hits) => {
+    fx!.flakBurst(w, d);
+    if (hits.length) fx!.holesFrom(local, hits);
+    const n = hits.reduce((a, h) => a + h.hits, 0);
+    if (n > 0) say(`FLAK: ${n} fragment hit${n > 1 ? "s" : ""}`);
+  };
+  debugHook.flak = flak;
+  debugHook.fx = fx;
   Object.assign(debugHook, { bombs, range, ap, aircraftRoot, world, turrets, rounds });
   crew = new Crew(nav);
   crew.sit("Seat_AC");
@@ -344,6 +371,7 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     while (acc >= STEP) {
       ap.update(fm, STEP);
       fm.step(STEP, 2);
+      flak.update(fm, STEP);
       acc -= STEP;
     }
     aircraftRoot.updateMatrixWorld(true);
@@ -361,7 +389,8 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     for (const t of turrets.values()) {
       const controlled = !!sightNow && sightNow.turrets.includes(t.name);
       t.update(dt, controlled && aimPoint ? t.solve(aimPoint) : null);
-      if (!controlled || !fireNow) { t.resetCooldown(); continue; }
+      const tc = fm.damage.byId.get(t.name);
+      if (!controlled || !fireNow || (tc && tc.hp <= 0)) { t.resetCooldown(); continue; }
       const inv = aircraftRoot.quaternion.clone().invert();
       for (const shot of t.fire(dt)) {
         const om = aircraftRoot.worldToLocal(shot.pos.clone());
@@ -374,6 +403,12 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       }
     }
     rounds?.update(dt);
+    fx?.update(fm, dt, window.innerHeight / (2 * Math.tan((camera.fov * Math.PI) / 360)));
+    const ev = fm.damage.events[0];
+    if (ev && ev !== lastEvent) {
+      for (const e of fm.damage.events) { if (e === lastEvent) break; if (e.severe) { say(e.msg.toUpperCase()); break; } }
+      lastEvent = ev;
+    }
     if (trolley && cr.tunnel) {
       const e = new THREE.Vector3();
       cr.eye(e);
@@ -452,6 +487,10 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       camera.position.copy(eyeLocal).applyMatrix4(aircraftRoot.matrixWorld);
       const look = new THREE.Quaternion().setFromEuler(new THREE.Euler(ang.pitch, ang.yaw, 0, "YXZ"));
       camera.quaternion.copy(aircraftRoot.quaternion).multiply(look);
+      if (fx && fx.shake > 0) {
+        const k = 0.02 * fx.shake;
+        camera.quaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler((Math.random() - 0.5) * k, (Math.random() - 0.5) * k, (Math.random() - 0.5) * k)));
+      }
     } else if (orbit) {
       const delta = aircraftRoot.position.clone().sub(prev);
       camera.position.add(delta);
@@ -468,6 +507,7 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
         `${c.parkingBrake ? "   PARK BRAKE" : ""}${input.mouseYoke ? "   MOUSE YOKE" : ""}` +
         `${ap.engaged ? `   AP ${ap.altitudeFt.toFixed(0)} ft / ${ap.headingDeg.toFixed(0).padStart(3, "0")}` : ""}\n` +
         crewStatus(cr) +
+        (fm.damage.destroyed ? `\n*** AIRCRAFT ${fm.damage.crashed ? "DESTROYED" : "LOST"}: ${fm.damage.destroyReason.toUpperCase()}   R: reset ***` : "") +
         (atStation("radar_observer") && bombs
           ? `\nBOMBS ${bombs.remaining}   DOORS ${fm.bombDoorPos > 0.95 ? "OPEN" : fm.bombDoorPos < 0.05 ? "CLOSED" : "MOVING"}   ` +
             `${bombs.armed ? "ARMED" : "SAFE"}   MODE ${bombs.mode.toUpperCase()}   HITS ${range!.destroyedCount}/${range!.targets.length}` +

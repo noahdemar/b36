@@ -12,6 +12,7 @@ export class Autopilot {
   headingDeg = 0;
   private pitchI = 0;
   private hdgI = 0;
+  private alphaF = NaN; // low-passed angle of attack: instantaneous alpha in the pitch command feeds back
   /** Below this indicated airspeed the climb command is reduced (no autothrottle). */
   minIasMph = 150;
 
@@ -21,6 +22,7 @@ export class Autopilot {
     this.headingDeg = fm.readout.heading_deg;
     this.pitchI = fm.controls.elevator;
     this.hdgI = 0;
+    this.alphaF = fm.readout.alpha_deg;
   }
 
   disengage() {
@@ -41,7 +43,9 @@ export class Autopilot {
     // altitude -> vertical speed -> pitch -> elevator
     let vsCmd = clamp((this.altitudeFt - r.alt_ft) * 0.5, -1200, 1200); // ft/min
     vsCmd = Math.min(vsCmd, (r.ias_mph - this.minIasMph) * 60); // speed protection
-    const pitchCmd = clamp((vsCmd - r.vs_fpm) * 0.004, -6, 8) + r.alpha_deg; // deg
+    if (Number.isNaN(this.alphaF)) this.alphaF = r.alpha_deg;
+    this.alphaF += (r.alpha_deg - this.alphaF) * Math.min(1, dt / 4);
+    const pitchCmd = clamp((vsCmd - r.vs_fpm) * 0.004, -6, 8) + this.alphaF; // deg
     const err = pitchCmd - r.pitch_deg;
     this.pitchI = clamp(this.pitchI + err * 0.02 * dt, -0.6, 0.6);
     c.elevator = clamp(this.pitchI + err * 0.06 - q * 1.5, -0.8, 0.8);

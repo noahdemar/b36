@@ -6,7 +6,7 @@ import { CHT_LIMIT, MIXTURE_NAMES, RPM_LEVER } from "./sim/powerplant";
 export const FE_HELP =
   "1-6 select engine, 0 all   Up/Down throttle   PgUp/PgDn rpm   Home/End turbo boost   [ ] cowl flaps\n" +
   "M / Shift+M mixture richer / leaner   I ignition   Enter (hold) starter   F feather\n" +
-  ", / . left / right tank   / crossfeed   J automatic engineer";
+  ", / . left / right tank   / crossfeed   J automatic engineer   B fire bottle (selected engines)";
 
 export class Engineer {
   selected = [0, 1, 2, 3, 4, 5];
@@ -42,6 +42,7 @@ export class Engineer {
       if (base === "Comma") { fm.fuel.cycle("L"); msg = `LEFT MANIFOLD: ${fm.fuel.tanks[fm.fuel.selected.L].name}`; }
       if (base === "Period") { fm.fuel.cycle("R"); msg = `RIGHT MANIFOLD: ${fm.fuel.tanks[fm.fuel.selected.R].name}`; }
       if (base === "Slash") { fm.fuel.crossfeed = !fm.fuel.crossfeed; msg = `CROSSFEED ${fm.fuel.crossfeed ? "OPEN" : "CLOSED"}`; }
+      if (base === "KeyB") msg = fm.damage.extinguish(fm, this.selected);
       if (base === "KeyJ") {
         fm.feAuto = !fm.feAuto;
         fm.fuel.auto = fm.feAuto;
@@ -75,7 +76,8 @@ export class Engineer {
     const col = (s: string) => s.padStart(6);
     const row = (name: string, f: (i: number) => string) => name.padEnd(9) + fm.pistons.map((_, i) => col(f(i))).join("");
     const p = fm.pistons;
-    const state = (i: number) => p[i].failed ? "FAIL" : p[i].running ? "RUN" : p[i].crank > 0 ? "FIRE" : p[i].starter ? "CRANK" : p[i].feather ? "FEATH" : "OFF";
+    const d = fm.damage;
+    const state = (i: number) => d.engineFire.has(i) ? "FIRE!" : p[i].failed ? "FAIL" : p[i].running ? "RUN" : p[i].crank > 0 ? "FIRE" : p[i].starter ? "CRANK" : p[i].feather ? "FEATH" : "OFF";
     const lines = [
       row("ENGINE", (i) => (this.selected.includes(i) ? `>${i + 1}` : `${i + 1}`)),
       row("STATE", state),
@@ -90,12 +92,19 @@ export class Engineer {
       row("CHT C", (i) => p[i].cht.toFixed(0) + (p[i].cht > CHT_LIMIT ? "!" : "")),
       row("OIL C", (i) => p[i].oilT.toFixed(0)),
       row("FF LB/H", (i) => p[i].ff.toFixed(0)),
+      row("OIL GAL", (i) => d.oil[i].toFixed(0) + (d.oilLeak.has(i) ? "v" : "")),
+      row("COND %", (i) => (100 * d.health(`eng${i + 1}`)).toFixed(0)),
     ];
     const f = fm.fuel;
     const totalFf = p.reduce((a, e) => a + e.ff, 0);
     lines.push(`FUEL ${f.total.toFixed(0)} lb (L ${f.side("L").toFixed(0)} / R ${f.side("R").toFixed(0)})   ` +
       `L: ${f.tanks[f.selected.L].name}  R: ${f.tanks[f.selected.R].name}   CROSSFEED ${f.crossfeed ? "OPEN" : "CLOSED"}   ` +
       `${totalFf > 0 ? `ENDURANCE ${(f.total / totalFf).toFixed(1)} h` : ""}   AUTO ENGINEER ${fm.feAuto ? "ON" : "OFF"}`);
+    const leaks = [...d.leaks.keys()].filter((t) => fm.fuel.tanks[t].qty > 1).map((t) => fm.fuel.tanks[t].name);
+    const fires = [...d.tankFire].map((t) => `${fm.fuel.tanks[t].name} TANK`).concat([...d.jetFire].map((j) => `JET ${j + 1}`));
+    lines.push(`FIRE BOTTLES ${d.extinguishers}${fires.length ? `   FIRE: ${fires.join(", ")}` : ""}${leaks.length ? `   LEAKING: ${leaks.join(", ")}` : ""}`);
+    const rep = d.report(6);
+    if (rep.length) lines.push(`DAMAGE: ${rep.join(", ")}`);
     return "\n" + lines.join("\n") + "\n" + FE_HELP;
   }
 }
@@ -106,10 +115,14 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 export function engineWarnings(fm: FlightModel): string {
   const w: string[] = [];
   fm.pistons.forEach((e, i) => {
-    if (e.failed) w.push(`ENG ${i + 1} FAILED`);
+    if (fm.damage.engineFire.has(i)) w.push(`ENG ${i + 1} FIRE`);
+    else if (e.failed) w.push(`ENG ${i + 1} FAILED`);
     else if (!e.running) w.push(`ENG ${i + 1} OUT`);
     else if (e.cht > CHT_LIMIT) w.push(`ENG ${i + 1} CHT HIGH`);
   });
+  if (fm.damage.tankFire.size) w.push("WING FIRE");
+  const worst = fm.damage.report(1)[0];
+  if (worst) w.push(`DAMAGE: ${worst}`);
   if (fm.fuel.total < 5000) w.push(`FUEL LOW ${fm.fuel.total.toFixed(0)} lb`);
   return w.length ? `\nWARNING: ${w.join("  ")}` : "";
 }

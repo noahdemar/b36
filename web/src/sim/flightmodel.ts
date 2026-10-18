@@ -4,6 +4,7 @@
 import { Quaternion, Vector3 } from "three";
 import { atmosphere, G0 } from "./atmosphere.ts";
 import { AIRCRAFT, type AircraftParams } from "./params.ts";
+import { DamageModel } from "./damage.ts";
 import { autoCowl, type Engine, FUEL_KG_PER_LB, FuelSystem, jetFuelFlow, makeEngine, stepEngine } from "./powerplant.ts";
 
 export interface Controls {
@@ -28,6 +29,7 @@ export interface JetState {
   fuelPress: number;
   oilPress: number;
   thrust: number;
+  failed?: boolean;
 }
 
 export interface Readout {
@@ -74,6 +76,7 @@ export class FlightModel {
   fuel = new FuelSystem();
   /** AI flight engineer: automatic cowl flaps (fuel sequencing is fuel.auto). Off when a player is at the FE seat. */
   feAuto = true;
+  damage: DamageModel;
   private burnedLb = 0;
   flapPos = 0;
   gearPos = 1; // 1 = down and locked
@@ -96,6 +99,7 @@ export class FlightModel {
     this.pistons = Array.from({ length: params.piston.count }, () => makeEngine(true));
     this.jets = Array.from({ length: params.jet.count }, () => ({ n: 0, rpmPct: 0, egt: 20, fuelPress: 0, oilPress: 0, thrust: 0 }));
     this.readout = {} as Readout;
+    this.damage = new DamageModel(this);
     this.placeOnGround(new Vector3(0, 0, 0), 0);
     this.updateReadout(0);
   }
@@ -112,7 +116,15 @@ export class FlightModel {
     this.jets.forEach((j) => { j.n = 0; });
     this.fuel = new FuelSystem();
     this.burnedLb = 0;
+    const randomFailures = this.damage?.randomFailures ?? true;
+    this.damage = new DamageModel(this);
+    this.damage.randomFailures = randomFailures;
     if (!running) this.controls.jetThrottle.fill(0);
+  }
+
+  /** Mass lost without burning (leaks, fires, separated structure), kg. */
+  addMassLoss(kg: number) {
+    this.setMass(Math.max(this.mass - kg, 60_000));
   }
 
   /** Model-origin offset from CG in body coords (render the model at pos + quat * modelOffset). */
@@ -169,7 +181,12 @@ export class FlightModel {
 
   step(dt: number, substeps = 4) {
     const h = dt / substeps;
-    for (let i = 0; i < substeps; i++) this.integrate(h);
+    if (this.damage.crashed) { this.updateReadout(dt); return; }
+    for (let i = 0; i < substeps; i++) {
+      this.integrate(h);
+      this.damage.update(this, h);
+      if (this.damage.crashed) break;
+    }
     if (this.burnedLb > 1) {
       this.setMass(this.mass - this.burnedLb * FUEL_KG_PER_LB);
       this.burnedLb = 0;
@@ -202,7 +219,7 @@ export class FlightModel {
     this.jets.forEach((j, i) => {
       const thr = clamp(c.jetThrottle[i] ?? 0, 0, 1);
       const side = i < 2 ? "L" : "R";
-      const running = thr > 0.01 && this.fuel.side(side) > 0.5;
+      const running = thr > 0.01 && this.fuel.side(side) > 0.5 && !j.failed;
       const target = running ? 0.12 + 0.88 * thr : 0;
       const tau = target > j.n ? jp.spoolUpTau : jp.spoolDownTau;
       j.n += (target - j.n) * (1 - Math.exp(-dt / tau));
@@ -261,7 +278,11 @@ export class FlightModel {
         cdStall = 1.2 * Math.sin(alpha + 0.25) ** 2;
       }
       const k = 1 / (Math.PI * p.oswald * p.aspectRatio);
-      const CD = p.cd0 + p.cdFlaps * f + p.cdGear * this.gearPos + p.cdBombDoors * this.bombDoorPos + k * CL * CL + cdStall;
+      const fx = this.damage.effects;
+      const liftF = (fx.liftL + fx.liftR) / 2;
+      const clAsym = -fx.rollLeftPerCL * CL; // roll from uneven lift (Cl is roll-right positive)
+      CL *= liftF;
+      const CD = fx.cdAdd + p.cd0 + p.cdFlaps * f + p.cdGear * this.gearPos + p.cdBombDoors * this.bombDoorPos + k * CL * CL + cdStall;
       const CY = p.cyBeta * beta;
 
       const vhat = vb.clone().divideScalar(V);
@@ -275,12 +296,12 @@ export class FlightModel {
       const qRate = this.omega.x; // pitch up
       const pRate = -this.omega.z; // roll right
       const rRate = -this.omega.y; // yaw right
-      const elev = c.elevator * p.elevatorMax + c.trim * p.trimMax;
-      const ail = c.aileron * p.aileronMax;
-      const rud = c.rudder * p.rudderMax;
-      const Cm = p.cm0 + p.cmAlpha * alpha - p.cmElevator * elev + (p.cmQ * qRate * cbar) / (2 * Vr) + p.cmFlaps * f;
-      const Cl = p.clBeta * beta + (p.clP * pRate * b) / (2 * Vr) + (p.clR * rRate * b) / (2 * Vr) + p.clAileron * ail;
-      const Cn = p.cnBeta * beta + (p.cnR * rRate * b) / (2 * Vr) + (p.cnP * pRate * b) / (2 * Vr)
+      const elev = (c.elevator * p.elevatorMax + c.trim * p.trimMax) * fx.elev;
+      const ail = c.aileron * p.aileronMax * (fx.ailL + fx.ailR) / 2;
+      const rud = c.rudder * p.rudderMax * fx.rud;
+      const Cm = p.cm0 + p.cmAlpha * fx.cmAlpha * alpha - p.cmElevator * elev + (p.cmQ * qRate * cbar) / (2 * Vr) + p.cmFlaps * f;
+      const Cl = clAsym + p.clBeta * beta + (p.clP * pRate * b) / (2 * Vr) + (p.clR * rRate * b) / (2 * Vr) + p.clAileron * ail;
+      const Cn = p.cnBeta * fx.cnBeta * beta + (p.cnR * rRate * b) / (2 * Vr) + (p.cnP * pRate * b) / (2 * Vr)
         + Math.abs(p.cnRudder) * rud + p.cnAileron * ail;
       M.x += qbar * S * cbar * Cm;
       M.z -= qbar * S * b * Cl;
@@ -331,8 +352,16 @@ export class FlightModel {
     const c = this.controls;
     const omegaW = this.omega.clone().applyQuaternion(this.quat);
     const up = new Vector3(0, 1, 0);
+    const ok = this.damage.effects.gearOk;
+    const belly = (name: string, x: number, y: number, z: number) => ({ name, pos: [x, y, z] as const, steer: false, k: p.gearK * 2, cd: p.gearC * 2, wheel: false });
     const legs = this.gearPos > 0.98
-      ? p.gear.map((g) => ({ ...g, k: p.gearK, cd: p.gearC, wheel: true }))
+      ? [
+        ...p.gear.filter((g) => ok[g.name]).map((g) => ({ ...g, k: p.gearK, cd: p.gearC, wheel: true })),
+        // collapsed legs: the nose or the inboard nacelle takes the load
+        ...(ok.nose ? [] : [belly("nose_c", 0, -1.85, -18)]),
+        ...(ok.mainL ? [] : [belly("nacL", -7.69, -2.45, 3.7)]),
+        ...(ok.mainR ? [] : [belly("nacR", 7.69, -2.45, 3.7)]),
+      ]
       : [
         // gear not locked: fuselage/belly and nacelle contacts (sliding)
         { name: "belly_f", pos: [0, -1.85, -14] as const, steer: false, k: p.gearK * 2, cd: p.gearC * 2, wheel: false },
