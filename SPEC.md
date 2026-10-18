@@ -217,6 +217,28 @@ carries the inner hull profile; Crew.clampToHull keeps the walking / climbing ey
 skin (crew_test checks seat eyes and random walks). Tunnel hatches are real openings with open doors,
 clickable (extras.tunnel), E range 1.3 m, and a "hatch ahead" hint within 4 m.
 
+## Next session (handoff, 2026-10-18)
+
+Open issues reported by the user after version 4 of the hosted page:
+1. Tunnel still unusable in play ("can't seem to get into the tunnel and use it"). Headless crew_test
+   and a scripted browser click at the hatch both enter tunnel mode, so the failure is in real play:
+   reproduce with real keyboard walking from the flight deck (W/A/S/D + E, and a mouse click on the
+   hatch) in the hosted build (web/artifact/out), then check: hatch prompt range vs. where the player
+   actually stops (GUF seats and the radio rack crowd the route), whether E is consumed elsewhere,
+   trolley movement with W/S once inside, and the exit at the aft end. Add a crew_test route that walks
+   from Seat_AC to the aft compartment using only player-style input (no teleports).
+2. Turret objects clip into the tunnel and the cockpit. Upper forward turrets (TURRET_D upper_fwd
+   10.6) sit inside the forward compartment; stowed turrets are lowered 0.95 m (extras retract) into
+   the fuselage, and the upper aft / lower aft wells overlap the tunnel (x -0.6, z 1.25, d 12.4-34.6)
+   and aft compartment. Fix: interior bays / doors that enclose each turret well, stow depth limited
+   to the well, and hide or clip turret geometry that would show inside crew spaces (check with the
+   hull guard and renders from inside every compartment).
+3. Make the gunner positions more realistic and intense: proper sighting stations (B-36H remote
+   sights in the blisters, reflector sight reticle with lead computing, range input), turret slew
+   sounds/visual feedback, ammunition counters and feed, gun smoke and recoil, spent cases, sight
+   vibration, tracer visibility; give the gunners targets (user earlier deferred enemy fighters, so
+   confirm before adding them; otherwise ground strafing targets and towed sleeve targets).
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part
