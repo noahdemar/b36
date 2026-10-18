@@ -187,25 +187,31 @@ vec3 terrainAlbedo(vec3 w, vec3 nrm, out float wet, out float rough) {
   float dist = length(vViewPosition);
   wet = 0.0; rough = 0.95;
   // regional rotation of the field grid
-  float ang = (tn(p / 9000.0) - 0.5) * 1.6;
+  // each 7 km region has its own field orientation and size (a constant rotation about the region's
+  // corner; a rotation varying with position would warp the grid)
+  vec2 rc = floor(p / 7000.0 + 0.5 * tn(p / 2500.0));
+  float ang = (th(rc + 3.1) - 0.5) * 1.4;
+  float fsz = 330.0 + 330.0 * th(rc + 8.7);
   mat2 R = mat2(cos(ang), -sin(ang), sin(ang), cos(ang));
-  vec2 q = R * p / 480.0;
+  vec2 q = R * (p - rc * 7000.0) / fsz + rc * 17.0;
   vec2 cell = floor(q);
   vec2 f = fract(q);
   float r = th(cell);
   vec3 crops[6];
-  crops[0] = vec3(0.30, 0.36, 0.17); crops[1] = vec3(0.42, 0.42, 0.22); crops[2] = vec3(0.52, 0.47, 0.30);
-  crops[3] = vec3(0.24, 0.31, 0.15); crops[4] = vec3(0.38, 0.33, 0.22); crops[5] = vec3(0.47, 0.50, 0.28);
+  crops[0] = vec3(0.24, 0.33, 0.12); crops[1] = vec3(0.40, 0.40, 0.17); crops[2] = vec3(0.55, 0.47, 0.26);
+  crops[3] = vec3(0.18, 0.27, 0.10); crops[4] = vec3(0.36, 0.29, 0.19); crops[5] = vec3(0.45, 0.50, 0.22);
   vec3 col = crops[int(r * 5.99)];
   // furrows and texture inside a field, hedgerows between fields
-  col *= 0.9 + 0.12 * tn(q * vec2(1.0, 30.0) + r * 10.0) + 0.08 * tn(p / 37.0);
+  // fine detail fades out with distance before it can alias into moire
+  float nearF = smoothstep(7000.0, 1500.0, dist);
+  col *= 0.94 + nearF * (0.12 * tn(q * vec2(1.0, 30.0) + r * 10.0) - 0.06) + 0.08 * tn(p / 37.0) * smoothstep(20000.0, 4000.0, dist);
   float edge = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
   float hedge = 1.0 - smoothstep(0.0, 0.035, edge);
   col = mix(col, vec3(0.13, 0.17, 0.09), hedge * 0.75 * smoothstep(40000.0, 4000.0, dist));
   // forest
   float fm = tf(p / 6000.0 + 3.7) + 0.15 * tn(p / 400.0);
   float forest = smoothstep(0.57, 0.62, fm);
-  vec3 fcol = vec3(0.10, 0.15, 0.08) * (0.75 + 0.5 * tn(p / 60.0));
+  vec3 fcol = vec3(0.10, 0.15, 0.08) * (0.75 + 0.5 * mix(0.5, tn(p / 60.0), smoothstep(15000.0, 3000.0, dist)));
   col = mix(col, fcol, forest);
   // towns
   vec2 tc = floor(p / 6000.0);
@@ -215,7 +221,7 @@ vec3 terrainAlbedo(vec3 w, vec3 nrm, out float wet, out float rough) {
     float rad = 500.0 + 900.0 * th(tc + 13.0);
     float t = 1.0 - smoothstep(rad * 0.6, rad, length(p - c) + 120.0 * tn(p / 150.0));
     vec2 b = fract(p / 70.0);
-    float street = step(0.86, max(b.x, b.y));
+    float street = step(0.86, max(b.x, b.y)) * smoothstep(14000.0, 3000.0, dist);
     vec3 roofs = mix(vec3(0.45, 0.38, 0.33), vec3(0.55, 0.53, 0.5), tn(floor(p / 18.0)));
     vec3 town = mix(roofs * (0.8 + 0.3 * th(floor(p / 14.0))), vec3(0.42, 0.42, 0.4), street);
     col = mix(col, town, t);

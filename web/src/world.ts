@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { Clouds } from "./clouds";
+import { Terrain } from "./terrain";
 
 export const RUNWAY = { length: 4000, width: 90 }; // m. Runway starts at z = +40, runs north (-z).
 
@@ -11,26 +13,6 @@ function canvasTexture(w: number, h: number, draw: (g: CanvasRenderingContext2D)
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 8;
-  return t;
-}
-
-function grassTexture() {
-  const t = canvasTexture(512, 512, (g) => {
-    g.fillStyle = "#58613f";
-    g.fillRect(0, 0, 512, 512);
-    for (let i = 0; i < 9000; i++) {
-      const v = 70 + Math.random() * 40;
-      g.fillStyle = `rgba(${v - 10},${v + 5},${v - 35},0.35)`;
-      g.fillRect(Math.random() * 512, Math.random() * 512, 2 + Math.random() * 6, 2 + Math.random() * 6);
-    }
-    for (let i = 0; i < 40; i++) {
-      g.fillStyle = `rgba(90,85,55,${0.08 + Math.random() * 0.1})`;
-      g.beginPath();
-      g.arc(Math.random() * 512, Math.random() * 512, 20 + Math.random() * 70, 0, Math.PI * 2);
-      g.fill();
-    }
-  });
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
 }
 
@@ -54,32 +36,35 @@ function runwayTexture() {
   return t;
 }
 
+/** Times of day the Shift+T key cycles through (local solar hours). */
+export const TIMES = [7.5, 10, 13, 16.5, 18.6];
+
 export class World {
   readonly group = new THREE.Group(); // moves opposite to the aircraft (floating origin)
   readonly sun: THREE.DirectionalLight;
-  private ground: THREE.Mesh;
-  private grass: THREE.Texture;
+  readonly terrain = new Terrain();
+  readonly clouds = new Clouds();
+  hours = 10;
+  private sky: Sky;
+  private hemi: THREE.HemisphereLight;
+  private scene: THREE.Scene;
+  private renderer: THREE.WebGLRenderer;
+  private sunDir = new THREE.Vector3();
 
   constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
-    const sky = new Sky();
-    sky.scale.setScalar(45_000);
-    const sunDir = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(50), THREE.MathUtils.degToRad(150));
-    const u = sky.material.uniforms;
-    u.sunPosition.value.copy(sunDir);
-    u.turbidity.value = 5;
-    u.rayleigh.value = 1.2;
+    this.scene = scene;
+    this.renderer = renderer;
+    this.sky = new Sky();
+    this.sky.scale.setScalar(220_000);
+    const u = this.sky.material.uniforms;
+    u.turbidity.value = 4;
+    u.rayleigh.value = 1.3;
     u.mieCoefficient.value = 0.004;
-    scene.add(sky);
-
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    const envScene = new THREE.Scene();
-    envScene.add(sky.clone());
-    scene.environment = pmrem.fromScene(envScene, 0, 1, 50_000).texture;
-    scene.environmentIntensity = 0.5;
-    scene.fog = new THREE.Fog(0xb8c6d4, 8_000, 40_000);
+    u.mieDirectionalG.value = 0.85;
+    scene.add(this.sky);
+    scene.fog = new THREE.Fog(0xb8c6d4, 25_000, 210_000);
 
     this.sun = new THREE.DirectionalLight(0xfff1dc, 3.2);
-    this.sun.position.copy(sunDir).multiplyScalar(150);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
     const sc = this.sun.shadow.camera;
@@ -87,17 +72,11 @@ export class World {
     this.sun.shadow.bias = -0.0003;
     this.sun.shadow.normalBias = 0.05;
     scene.add(this.sun, this.sun.target);
-    scene.add(new THREE.HemisphereLight(0xc4d8ff, 0x4d4a3c, 0.25));
+    this.hemi = new THREE.HemisphereLight(0xc4d8ff, 0x4d4a3c, 0.25);
+    scene.add(this.hemi);
 
-    this.grass = grassTexture();
-    this.grass.repeat.set(400, 400); // 100 m per tile over 40 km
-    this.ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(40_000, 40_000),
-      new THREE.MeshStandardMaterial({ map: this.grass, roughness: 1 }),
-    );
-    this.ground.rotation.x = -Math.PI / 2;
-    this.ground.receiveShadow = true;
-    scene.add(this.ground);
+    this.group.add(this.terrain.group, this.clouds.group);
+    this.setTime(this.hours);
 
     const rwTex = runwayTexture();
     rwTex.repeat.set(1, RUNWAY.length / 360);
@@ -124,14 +103,53 @@ export class World {
     scene.add(this.group);
   }
 
-  /** Floating origin: aircraft stays near (0, y, 0); the world shifts. */
-  follow(aircraftWorldPos: THREE.Vector3) {
+  /** Sun position, light colours, sky, fog and the environment map for a local solar time. */
+  setTime(hours: number) {
+    this.hours = hours;
+    // sun for latitude 35 N, declination +20 deg (early summer): a scenery choice, not the mission date
+    const lat = THREE.MathUtils.degToRad(35), dec = THREE.MathUtils.degToRad(20);
+    const ha = ((hours - 12) / 12) * Math.PI;
+    const sinE = Math.sin(lat) * Math.sin(dec) + Math.cos(lat) * Math.cos(dec) * Math.cos(ha);
+    const elev = Math.asin(sinE);
+    const cosAz = THREE.MathUtils.clamp((Math.sin(dec) - sinE * Math.sin(lat)) / (Math.cos(elev) * Math.cos(lat)), -1, 1);
+    const az = ha < 0 ? Math.acos(cosAz) : 2 * Math.PI - Math.acos(cosAz); // from north, east positive
+    this.sunDir.set(Math.cos(elev) * Math.sin(az), sinE, -Math.cos(elev) * Math.cos(az)).normalize();
+    const u = this.sky.material.uniforms;
+    u.sunPosition.value.copy(this.sunDir);
+    const low = 1 - THREE.MathUtils.smoothstep(this.sunDir.y, 0.03, 0.45); // 1 near the horizon
+    u.turbidity.value = 3.5 + 4 * low;
+    u.rayleigh.value = 1.2 + 1.3 * low;
+    const sunCol = new THREE.Color(1.0, 0.95, 0.88).lerp(new THREE.Color(1.0, 0.62, 0.32), low);
+    this.sun.color.copy(sunCol);
+    this.sun.intensity = 3.3 * THREE.MathUtils.smoothstep(this.sunDir.y, -0.02, 0.15);
+    this.hemi.intensity = 0.18 + 0.12 * (1 - low);
+    const fog = new THREE.Color(0.66, 0.75, 0.86).lerp(new THREE.Color(0.86, 0.70, 0.58), low * 0.8);
+    (this.scene.fog as THREE.Fog).color.copy(fog);
+    this.clouds.setLight(this.sunDir, sunCol.clone().multiplyScalar(1.05), new THREE.Color(0.52, 0.57, 0.68).lerp(new THREE.Color(0.45, 0.38, 0.42), low), fog);
+    this.terrain.material.needsUpdate = false;
+    // environment map from the sky
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envScene = new THREE.Scene();
+    const sky2 = new Sky();
+    sky2.scale.setScalar(50_000);
+    for (const k of Object.keys(u)) (sky2.material.uniforms[k].value as unknown) = u[k].value;
+    envScene.add(sky2);
+    this.scene.environment?.dispose();
+    this.scene.environment = pmrem.fromScene(envScene, 0, 1, 60_000).texture;
+    this.scene.environmentIntensity = 0.5;
+    pmrem.dispose();
+  }
+
+  get sunDirection() {
+    return this.sunDir;
+  }
+
+  /** Floating origin: aircraft stays near (0, y, 0); the world shifts. camWorld: camera, world coords. */
+  follow(aircraftWorldPos: THREE.Vector3, camWorld?: THREE.Vector3) {
     this.group.position.set(-aircraftWorldPos.x, 0, -aircraftWorldPos.z);
-    // ground follows in whole-tile steps so the texture appears fixed to the earth
-    const tile = 100;
-    const gx = Math.round(aircraftWorldPos.x / tile) * tile;
-    const gz = Math.round(aircraftWorldPos.z / tile) * tile;
-    this.ground.position.set(gx - aircraftWorldPos.x, 0, gz - aircraftWorldPos.z);
+    const c = camWorld ?? aircraftWorldPos;
+    this.terrain.update(c);
+    this.clouds.update(c);
   }
 
   /** Keep the shadow frustum on the aircraft. */
@@ -143,8 +161,7 @@ export class World {
       sc.updateProjectionMatrix();
       this.sun.shadow.normalBias = halfSize < 20 ? 0.01 : 0.05;
     }
-    const dir = this.sun.position.clone().sub(this.sun.target.position).normalize();
     this.sun.target.position.copy(target);
-    this.sun.position.copy(target).addScaledVector(dir, 150);
+    this.sun.position.copy(target).addScaledVector(this.sunDir, 150);
   }
 }

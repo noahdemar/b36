@@ -236,6 +236,7 @@ export class Rounds {
   private life: number[] = [];
   private tracer: boolean[] = [];
   private tag: number[] = [];
+  private fresh: boolean[] = []; // fired this frame: already at the muzzle at the current time
   private mesh: THREE.InstancedMesh;
   private glow: THREE.InstancedMesh;
   private tmp = new THREE.Object3D();
@@ -267,12 +268,14 @@ export class Rounds {
       this.life.shift();
       this.tracer.shift();
       this.tag.shift();
+      this.fresh.shift();
     }
     this.pos.push(pos);
     this.vel.push(vel);
     this.life.push(life);
     this.tracer.push(tracer);
     this.tag.push(tag);
+    this.fresh.push(true);
   }
 
   get count() {
@@ -280,11 +283,12 @@ export class Rounds {
   }
 
   clear() {
-    this.pos.length = this.vel.length = this.life.length = this.tracer.length = this.tag.length = 0;
+    this.pos.length = this.vel.length = this.life.length = this.tracer.length = this.tag.length = this.fresh.length = 0;
   }
 
   update(dt: number) {
     for (let i = this.pos.length - 1; i >= 0; i--) {
+      if (this.fresh[i]) { this.fresh[i] = false; continue; }
       const p = this.pos[i], v = this.vel[i];
       this.prev.copy(p);
       stepRound(this.round, p, v, dt);
@@ -297,6 +301,7 @@ export class Rounds {
         this.life.splice(i, 1);
         this.tracer.splice(i, 1);
         this.tag.splice(i, 1);
+        this.fresh.splice(i, 1);
       }
     }
     let n = 0;

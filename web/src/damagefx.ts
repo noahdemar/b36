@@ -6,7 +6,7 @@ import type { FlightModel } from "./sim/flightmodel";
 
 // ------------------------------------------------------------------------------------- particles
 
-class Particles {
+export class Particles {
   readonly points: THREE.Points;
   private pos: Float32Array;
   private size: Float32Array;
@@ -123,7 +123,13 @@ class Particles {
 interface Debris { obj: THREE.Object3D; vel: THREE.Vector3; spin: THREE.Vector3; clips: { mat: THREE.Material; local: THREE.Plane }[]; grounded: boolean; t: number }
 interface Restore { obj: THREE.Object3D; parent: THREE.Object3D; matrix: THREE.Matrix4 }
 
+/** Contrails form where the air is colder than about -38 C (ISA: above about 8,200 m). ESTIMATED: the
+ * real threshold depends on humidity and engine (Schmidt-Appleman); one temperature is used here. */
+const CONTRAIL_T = 235;
+
 export class DamageFX {
+  contrails = new Particles(9000, false);
+  private trailPrev = new Map<string, THREE.Vector3>();
   smoke = new Particles(9000, false);
   fire = new Particles(4000, true);
   private holes: THREE.InstancedMesh;
@@ -146,7 +152,7 @@ export class DamageFX {
     this.world = world;
     this.aircraftRoot = aircraftRoot;
     this.ext = ext;
-    world.add(this.smoke.points, this.fire.points);
+    world.add(this.contrails.points, this.smoke.points, this.fire.points);
     const hg = new THREE.CircleGeometry(1, 10);
     const hm = new THREE.MeshStandardMaterial({ color: 0x0b0b0b, roughness: 1, polygonOffset: true, polygonOffsetFactor: -4, side: THREE.DoubleSide });
     this.holes = new THREE.InstancedMesh(hg, hm, 600);
@@ -171,6 +177,22 @@ export class DamageFX {
     }
     this.fire.spawn(world, new THREE.Vector3(), 22, 30, 0.25, 1, [1.0, 0.6, 0.25]);
     if (distance < 150) this.shake = Math.max(this.shake, Math.min(1, 40 / Math.max(distance, 10)));
+  }
+
+  /** Condensation trails from the bomber's engines and from fighters (keyed emitters, world frame). */
+  contrail(key: string, p: THREE.Vector3, tempK: number, scale = 1) {
+    const prev = this.trailPrev.get(key);
+    this.trailPrev.set(key, p.clone());
+    if (tempK > CONTRAIL_T + 3) return;
+    const dens = Math.min(1, (CONTRAIL_T + 3 - tempK) / 6);
+    const d = prev ? prev.distanceTo(p) : 0;
+    if (!prev || d > 400) return;
+    const n = Math.min(20, Math.ceil(d / 7));
+    const j = new THREE.Vector3();
+    for (let k = 1; k <= n; k++) {
+      j.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.6);
+      this.contrails.spawn(prev.clone().lerp(p, k / n), j, 1.6 * scale, 0.55 * scale, 55, 0.42 * dens, [0.97, 0.98, 1.0]);
+    }
   }
 
   /** Fireball, smoke and burning debris (a fighter blowing up), world (sim) frame. */
@@ -344,6 +366,7 @@ export class DamageFX {
       db.obj.updateMatrixWorld(true);
       for (const c of db.clips) this.updateClip(c, db.obj);
     }
+    this.contrails.update(dt, fovScale);
     this.smoke.update(dt, fovScale);
     this.fire.update(dt, fovScale);
     this.shake = Math.max(0, this.shake - dt * 2.5);

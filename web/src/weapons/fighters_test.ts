@@ -31,8 +31,8 @@ const DEFS: [string, [number, number, number], [number, number, number], [number
 
 function setup(seed: number, ai: boolean) {
   const fm = new FlightModel();
-  fm.placeInFlight(25_000 * 0.3048, 105, 0);
-  fm.controls.throttle.fill(0.8);
+  fm.placeInFlight(32_000 * 0.3048, 105, 0);
+  fm.controls.throttle.fill(0.85);
   fm.damage.randomFailures = false;
   fm.damage.rng = seeded(seed);
   const ap = new Autopilot();
@@ -161,7 +161,7 @@ function crossing(mode: "assist" | "lead" | "fixed600" | "nolead") {
 for (const mode of ["assist", "lead", "fixed600", "nolead"] as const) {
   const r = crossing(mode);
   console.log(`     crossing pass, ${mode}: ${r.hits} hits from ${r.fired} rounds (${(100 * r.hits / Math.max(1, r.fired)).toFixed(1)}%)`);
-  if (mode === "assist") check(r.hits >= 10, `computing sight with range lock scores on a crossing fighter (${r.hits} hits)`);
+  if (mode === "assist") check(r.hits >= 50, `computing sight with range lock scores on a crossing fighter (${r.hits} hits)`);
   if (mode === "nolead") check(r.hits <= 2, `aiming straight at a crossing fighter misses (${r.hits} hits)`);
 }
 

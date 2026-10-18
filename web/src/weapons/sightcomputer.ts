@@ -19,8 +19,8 @@ export class SightComputer {
   range = 600;
   assist = false;
   lock: Fighter | null = null;
-  private relPrev: THREE.Vector3 | null = null; // target relative to the eye, model frame
-  private vRel = new THREE.Vector3(); // model frame, m/s
+  private relPrev: THREE.Vector3 | null = null; // target relative to the eye, world frame (inertial, like a gyro)
+  private vRel = new THREE.Vector3(); // world frame, m/s
 
   wheel(deltaY: number) {
     if (this.lock) return; // ranging comes from the radar / assist
@@ -39,8 +39,7 @@ export class SightComputer {
    */
   compute(dt: number, fm: FlightModel, q: THREE.Quaternion, eyeW: THREE.Vector3, dirW: THREE.Vector3, fighters: Fighters | null,
     radar: boolean) {
-    const qInv = q.clone().invert();
-    const dirM = dirW.clone().applyQuaternion(qInv);
+    void q;
     // radar lock (tail) or range assist: nearest fighter inside the cone
     if (radar || this.assist) {
       let best: Fighter | null = null, bd = LOCK_RANGE;
@@ -56,12 +55,11 @@ export class SightComputer {
     // relative velocity: rate of the line of sight (gyro) times range, plus the range rate (from the
     // gunner's framing or the radar); filtered
     const R = this.range;
-    const rel = dirM.clone().multiplyScalar(R);
+    const rel = dirW.clone().multiplyScalar(R);
     if (this.relPrev && dt > 0) this.vRel.lerp(rel.clone().sub(this.relPrev).divideScalar(dt), Math.min(1, dt / TRACK_TAU));
     this.relPrev = rel;
-    const vRelM = this.vRel.clone();
     const targetW = eyeW.clone().addScaledVector(dirW, R);
-    const targetVel = fm.vel.clone().add(vRelM.applyQuaternion(q));
+    const targetVel = fm.vel.clone().add(this.vRel);
     return (t: Turret, pivotW: THREE.Vector3) => {
       void t;
       const sol = leadSolution(ROUND, pivotW, fm.vel, targetW, targetVel, 3.5);

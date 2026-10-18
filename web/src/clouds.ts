@@ -6,7 +6,7 @@ import * as THREE from "three";
 
 const TILE = 8000;
 const RADIUS_TILES = 9; // about 72 km each way
-const MAX_PUFFS = 9000;
+const MAX_PUFFS = 16000;
 
 function hash(a: number, b: number, c = 0) {
   let h = (a * 374761393 + b * 668265263 + c * 2147483647) | 0;
@@ -86,7 +86,8 @@ export class Clouds {
     uLit: { value: new THREE.Color(1.0, 0.98, 0.94) },
     uShadow: { value: new THREE.Color(0.55, 0.6, 0.7) },
     uFog: { value: new THREE.Color(0.75, 0.82, 0.9) },
-    uFogFar: { value: 150_000 },
+    uFogFar: { value: 180_000 },
+    uBase: { value: 1900 },
   };
 
   constructor() {
@@ -109,10 +110,14 @@ export class Clouds {
         #include <logdepthbuf_pars_vertex>
         attribute vec3 iCenter; attribute float iSize; attribute float iShade;
         uniform vec3 uSun;
-        varying vec2 vUv; varying float vShade; varying float vDist; varying float vForward;
+        varying vec2 vUv; varying float vShade; varying float vDist; varying float vForward; varying float vY;
         void main() {
           vec4 mv = modelViewMatrix * vec4(iCenter, 1.0);
           mv.xy += position.xy * iSize;
+          // world height of this corner (camera right and up axes), for the flat cloud base
+          vec3 camR = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+          vec3 camU = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+          vY = (modelMatrix * vec4(iCenter, 1.0)).y + (camR.y * position.x + camU.y * position.y) * iSize;
           gl_Position = projectionMatrix * mv;
           vUv = uv;
           vShade = iShade;
@@ -124,15 +129,16 @@ export class Clouds {
       fragmentShader: /* glsl */ `
         #include <common>
         #include <logdepthbuf_pars_fragment>
-        uniform sampler2D map; uniform vec3 uLit; uniform vec3 uShadow; uniform vec3 uFog; uniform float uFogFar;
-        varying vec2 vUv; varying float vShade; varying float vDist; varying float vForward;
+        uniform sampler2D map; uniform vec3 uLit; uniform vec3 uShadow; uniform vec3 uFog; uniform float uFogFar; uniform float uBase;
+        varying vec2 vUv; varying float vShade; varying float vDist; varying float vForward; varying float vY;
         void main() {
           #include <logdepthbuf_fragment>
-          float a = texture2D(map, vUv).a;
+          float a = texture2D(map, vUv).a * smoothstep(uBase - 10.0, uBase + 60.0, vY);
+          float shade = clamp(vShade + (vUv.y - 0.45) * 0.35, 0.0, 1.0);
           if (a < 0.01) discard;
           // thin edges glow when looking toward the sun (forward scattering)
           float rim = pow(vForward, 8.0) * (1.0 - a) * 1.6;
-          vec3 c = mix(uShadow, uLit, vShade) + uLit * rim;
+          vec3 c = mix(uShadow, uLit, shade) + uLit * rim;
           float fog = smoothstep(uFogFar * 0.15, uFogFar, vDist);
           c = mix(c, uFog, fog);
           float near = smoothstep(30.0, 250.0, vDist); // fade puffs the camera flies through
@@ -188,15 +194,15 @@ export class Clouds {
           if (Math.hypot(cx, cz) < 2500) continue;
           const w = 700 + hash(i, j, k + 30) * 1800; // cloud width
           const h = w * (0.45 + 0.35 * hash(i, j, k + 40));
-          const n = Math.round(10 + w / 120);
+          const n = Math.round(24 + w / 45);
           for (let m = 0; m < n && this.puffs.length < MAX_PUFFS; m++) {
             const u = hash(i * 7 + m, j * 13 + k, 1), v = hash(i * 11 + m, j * 5 + k, 2), z = hash(i + m * 3, j + k, 3);
             const a = u * Math.PI * 2, r = Math.sqrt(v) * w * 0.5;
             const x = Math.cos(a) * r, y = Math.sin(a) * r * 0.6;
             // dome: higher in the middle, flat base
             const top = h * Math.sqrt(Math.max(0, 1 - (r / (w * 0.5)) ** 2));
-            const py = this.base + z * top;
-            const s = (0.35 + 0.4 * hash(m, k, 4)) * w * (0.75 - 0.3 * z);
+            const py = this.base + Math.pow(z, 0.7) * top;
+            const s = (0.2 + 0.22 * hash(m, k, 4)) * w * (0.85 - 0.35 * z);
             const p = new THREE.Vector3(cx + x, py + s * 0.25, cz + y);
             // lighting: height in the cloud and the side facing the sun
             const side = new THREE.Vector3(x, (py - this.base) - h * 0.4, y).normalize().dot(sun);

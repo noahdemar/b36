@@ -19,7 +19,9 @@ import { GunSight } from "./gunsight";
 import { Sound } from "./audio";
 import { ChaseCam } from "./chasecam";
 import { Instructor } from "./sim/instructor";
-import { World } from "./world";
+import { TIMES, World } from "./world";
+import { terrainHeight } from "./terrain";
+import { atmosphere } from "./sim/atmosphere";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -32,7 +34,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.03, 60_000);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.03, 260_000);
 const world = new World(scene, renderer);
 
 const hud = document.getElementById("hud")!;
@@ -199,8 +201,8 @@ function startFighterAttack() {
   fx?.reset();
   addTurretComponents();
   clearFighters();
-  fm.placeInFlight(25_000 * 0.3048, 105, 0);
-  fm.controls.throttle.fill(0.8);
+  fm.placeInFlight(32_000 * 0.3048, 105, 0); // high enough for contrails
+  fm.controls.throttle.fill(0.85);
   fm.controls.jetThrottle.fill(0);
   fm.controls.flaps = 0;
   fm.flapPos = 0;
@@ -209,7 +211,7 @@ function startFighterAttack() {
   ap.engage(fm);
   raid.waves = 3;
   raid.next = 4;
-  say("FIGHTER ATTACK: MiG-15s inbound, 25,000 ft. Tab: walk to a gun station (gunners in the blisters and the tail).");
+  say("FIGHTER ATTACK: MiG-15s inbound, 32,000 ft. Tab: walk to a gun station (gunners in the blisters and the tail).");
 }
 
 /** Airborne on the bombing run: 15 km south of the range, 12,000 ft, heading north, autopilot on. */
@@ -417,6 +419,12 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     if ((bigDisplay === "chart" && station !== "navigator") || (bigDisplay === "scope" && (station !== "radar_observer" || noseGuns))) bigDisplay = null;
     if (pressed.has("KeyN")) startBombRun();
     if (pressed.has("KeyL")) startFighterAttack();
+    if (pressed.has("KeyT+S")) {
+      const i = (TIMES.indexOf(world.hours) + 1) % TIMES.length;
+      world.setTime(TIMES[i]);
+      const h = Math.floor(TIMES[i]), m = Math.round((TIMES[i] - h) * 60);
+      say(`TIME OF DAY ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+    }
     if (gs && pressed.has("KeyG") && !gs.aft) { gunsight.assist = !gunsight.assist; say(gunsight.assist ? "RANGE ASSIST ON (game aid: the ring frames the nearest fighter)" : "MANUAL RANGING"); }
     // autopilot: Z from the pilot seats or the bombardier; yoke input disengages it
     if (pressed.has("KeyZ") && (flying() || atStation("radar_observer"))) {
@@ -537,7 +545,9 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
 
     const prev = prevRoot.clone();
     prevRoot.copy(aircraftRoot.position);
-    world.follow(fm.pos);
+    world.follow(fm.pos, toWorldPt(camera.getWorldPosition(new THREE.Vector3())));
+    // terrain away from the flat plain: flying into it is a crash (the flight model's ground is y = 0)
+    if (!fm.damage.crashed && fm.pos.y < terrainHeight(fm.pos.x, fm.pos.z) + 3) fm.damage.crash(fm, "flew into terrain");
     // cabin environment follows the aircraft attitude (world direction -> model direction)
     cabinRot.setFromQuaternion(aircraftRoot.quaternion.clone().invert());
     for (const m of cabinMats) m.envMapRotation.copy(cabinRot);
@@ -770,6 +780,21 @@ function weaponEffects(dt: number, cr: Crew) {
   for (const s of defense?.shots ?? []) {
     fx?.muzzle(s.posWorld, s.dirWorld, fm.vel, n++ % 2 === 0);
     sound.gun(s.posWorld.distanceTo(ear), inside);
+  }
+  // contrails: six piston engines, four jets, and the fighters
+  const tK = atmosphere(fm.pos.y).temperature;
+  if (fx && tK < 245) {
+    const m = aircraftRoot.matrixWorld;
+    fm.p.piston.x.forEach((x, i) => {
+      if (fm.pistons[i].rpm < 300) return;
+      const l = new THREE.Vector3(x, 0.45, 26.29 + 0.0507 * Math.abs(x) - 24.7 + 2.5);
+      fx!.contrail(`p${i}`, toWorldPt(l.applyMatrix4(m)), tK);
+    });
+    fm.p.jet.x.forEach((x, i) => {
+      if (fm.jets[i].n < 0.2) return;
+      fx!.contrail(`j${i}`, toWorldPt(new THREE.Vector3(x, -1.8, 22.6 - 24.7 + 3).applyMatrix4(m)), tK, 0.7);
+    });
+    for (const f of fighters?.list ?? []) if (f.alive) fx.contrail(`f${f.id}`, f.pos.clone().addScaledVector(f.vel, -0.03), atmosphere(f.pos.y).temperature, 0.6);
   }
   let near = Infinity, closing = 0;
   for (const f of fighters?.list ?? []) {
