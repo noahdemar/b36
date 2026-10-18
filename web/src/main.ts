@@ -219,8 +219,18 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     }
     if (o instanceof THREE.Mesh && (o.material as THREE.Material).transparent) o.castShadow = false;
   });
+  const cabinEnv = cabinEnvironment(renderer);
   int.traverse((o) => {
-    if (o instanceof THREE.Mesh) (o.material as THREE.MeshStandardMaterial).envMapIntensity = 0.12;
+    if (o instanceof THREE.Mesh) {
+      // the cabin is lit through the glazing only: the shell and everything inside casts and receives
+      // shadows; fill and reflections come from a cabin environment (bright only toward the glazing)
+      // that turns with the aircraft, darkened by the baked ambient occlusion
+      const m = o.material as THREE.MeshStandardMaterial;
+      m.envMap = cabinEnv;
+      m.envMapIntensity = 1.0;
+      cabinMats.add(m);
+      if (!m.transparent) { o.castShadow = true; o.receiveShadow = true; }
+    }
   });
   extFrames = ext.getObjectByName("CanopyFrame") ?? null;
   aircraftRoot.add(headlamp);
@@ -435,7 +445,12 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     aircraftRoot.position.set(off.x, fm.pos.y + off.y, off.z);
     aircraftRoot.quaternion.copy(fm.quat);
     world.follow(fm.pos);
-    world.aimSun(aircraftRoot.position);
+    // cabin environment follows the aircraft attitude (world direction -> model direction)
+    cabinRot.setFromQuaternion(aircraftRoot.quaternion.clone().invert());
+    for (const m of cabinMats) m.envMapRotation.copy(cabinRot);
+    // inside: a tight shadow frustum around the eye gives sharp sunlight through the glazing
+    if (view === "inside") world.aimSun(camera.getWorldPosition(new THREE.Vector3()), 8);
+    else world.aimSun(aircraftRoot.position, 60);
 
     const c = fm.controls;
     vis.aileron = c.aileron;
@@ -531,6 +546,34 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
   });
 });
 
+const cabinMats = new Set<THREE.MeshStandardMaterial>();
+const cabinRot = new THREE.Euler();
+
+/** Environment seen from inside the flight deck, in model axes (x right, y up, z aft): dark cabin,
+ * sky through the glazing forward and above, a little ground light through the side windows. */
+function cabinEnvironment(r: THREE.WebGLRenderer): THREE.Texture {
+  const geo = new THREE.SphereGeometry(10, 64, 32);
+  const col: number[] = [];
+  const p = geo.getAttribute("position");
+  const v = new THREE.Vector3();
+  const glaze = new THREE.Vector3(0, 0.55, -0.83).normalize();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i).normalize();
+    const g = THREE.MathUtils.smoothstep(v.dot(glaze), 0.15, 0.6); // canopy
+    const side = THREE.MathUtils.smoothstep(Math.abs(v.x), 0.75, 0.95) * THREE.MathUtils.smoothstep(v.y, -0.1, 0.3) * 0.5;
+    const sky = new THREE.Color(0.55, 0.68, 0.9);
+    const c = new THREE.Color(0.018, 0.018, 0.02).lerp(sky, Math.min(1, g + side));
+    col.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  const sc = new THREE.Scene();
+  sc.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+  const pm = new THREE.PMREMGenerator(r);
+  const tex = pm.fromScene(sc, 0.02).texture;
+  pm.dispose();
+  return tex;
+}
+
 function navStatus(): string {
   const i = chart.info(fm);
   return `\nNAV  ${chart.waypoint.name}: ${i.brg.toFixed(0).padStart(3, "0")} deg, ${(i.dist / 1609.344).toFixed(1)} mi, ETE ${isFinite(i.ete) ? (i.ete / 60).toFixed(1) + " min" : "-"}` +
@@ -559,8 +602,11 @@ function crewStatus(cr: Crew): string {
   const hint = it?.kind === "seat" ? `   E: sit (${STATION_NAMES[it.seat.station] ?? it.seat.station})`
     : it?.kind === "ladder" ? `   E: ${cr.deck.id === it.ladder.lower ? "climb up" : "climb down"}`
     : it?.kind === "tunnel" ? `   E: enter the tunnel to the ${it.end === 0 ? "aft" : "forward"} compartment` : "";
+  const td = cr.tunnelDistance();
+  const tunnelHint = it?.kind !== "tunnel" && td < 4
+    ? `   TUNNEL HATCH ${td.toFixed(1)} m ${cr.deck.id === "upper" ? "aft, on the left of the aft bulkhead" : "forward, top of the ladder"}` : "";
   const deck = cr.deck.id === "upper" ? "FLIGHT DECK" : cr.deck.id === "lower" ? "LOWER DECK" : "AFT COMPARTMENT";
-  return `WALKING, ${deck}${hint}`;
+  return `WALKING, ${deck}${hint}${tunnelHint}`;
 }
 
 // ---------------------------------------------------------------- pointer: look, pick, drag
@@ -573,6 +619,11 @@ function setupPointer(cockpit: Cockpit) {
   let drag: { pick: Pickable; startY: number; startX: number; start: number; all: boolean } | null = null;
   el.addEventListener("contextmenu", (e) => e.preventDefault());
 
+  debugHook.pickAt = (x: number, y: number) => {
+    ndc.set((x / window.innerWidth) * 2 - 1, -(y / window.innerHeight) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    return ray.intersectObject(cockpit.root, true).slice(0, 4).map((h) => `${h.object.name}@${h.distance.toFixed(2)}:${cockpit.pick(h.object)?.control ?? "-"}`);
+  };
   const pickAt = (e: PointerEvent): Pickable | null => {
     ndc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
     ray.setFromCamera(ndc, camera);
@@ -621,6 +672,13 @@ function setupPointer(cockpit: Cockpit) {
     const p = pickAt(e);
     if (!p) return;
     const cr = crew!;
+    if (p.control === "tunnel") {
+      if (cr.mode !== "walking") return;
+      const it = cr.nearestInteraction();
+      if (it?.kind === "tunnel") cr.useTunnel(it.tunnel, it.end);
+      else say("Walk up to the hatch to enter the tunnel");
+      return;
+    }
     if (p.control === "sit" || p.control === "ladder") {
       if (cr.mode !== "walking") return;
       const it = cr.nearestInteraction();
@@ -688,8 +746,9 @@ function setupPointer(cockpit: Cockpit) {
     }
     if (view === "inside") {
       let p = pickAt(e);
-      if (p && p.control !== "sit" && p.control !== "ladder" && !flying()) p = null;
-      if (p && (p.control === "sit" || p.control === "ladder") && crew?.mode !== "walking") p = null;
+      const walkPick = (c: string) => c === "sit" || c === "ladder" || c === "tunnel";
+      if (p && !walkPick(p.control) && !flying()) p = null;
+      if (p && walkPick(p.control) && crew?.mode !== "walking") p = null;
       el.style.cursor = p ? "pointer" : "default";
       label.textContent = p ? describe(p) : "";
     }
@@ -727,6 +786,7 @@ function describe(p: Pickable): string {
     case "pedal": return "Rudder pedals (Q / E)";
     case "sit": return `Seat: ${String(p.data.sit).replace("Seat_", "")} (click to sit)`;
     case "ladder": return "Ladder between decks (click or E at either end)";
+    case "tunnel": return "Crawl tunnel over the bomb bays (click or E at the hatch)";
     default: return p.control;
   }
 }

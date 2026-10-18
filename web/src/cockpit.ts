@@ -59,6 +59,7 @@ export class Cockpit {
       if (typeof d.control === "string") return { node: o, control: d.control, data: d };
       if (typeof d.sit === "string") return { node: o, control: "sit", data: d };
       if (typeof d.ladder === "string") return { node: o, control: "ladder", data: d };
+      if (typeof d.tunnel === "string") return { node: o, control: "tunnel", data: d };
     }
     return null;
   }

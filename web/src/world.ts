@@ -135,7 +135,14 @@ export class World {
   }
 
   /** Keep the shadow frustum on the aircraft. */
-  aimSun(target: THREE.Vector3) {
+  aimSun(target: THREE.Vector3, halfSize = 60) {
+    const sc = this.sun.shadow.camera;
+    if (sc.right !== halfSize) {
+      sc.left = sc.bottom = -halfSize;
+      sc.right = sc.top = halfSize;
+      sc.updateProjectionMatrix();
+      this.sun.shadow.normalBias = halfSize < 20 ? 0.01 : 0.05;
+    }
     const dir = this.sun.position.clone().sub(this.sun.target.position).normalize();
     this.sun.target.position.copy(target);
     this.sun.position.copy(target).addScaledVector(dir, 150);

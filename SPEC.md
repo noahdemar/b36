@@ -205,6 +205,18 @@ Interior realism (tools/model/build_interior.py):
   labeled placards, textured materials (painted metal, crackle-black panels, wear), baked ambient
   occlusion, panel / cabin lighting; then FE station, lower deck, tunnel, aft compartment.
 
+Interior status (2026-10-18): tiled PBR materials (interior_textures.py: worn black paint, clean panel
+paint, grey-green paint, olive canvas, khaki webbing, quilted black sound-proofing, floor), box-projected
+UVs, 2048 px AO lightmap baked in Cycles (16 spp, 0.5 m, ~5.5 min) exported as the glTF occlusion map on
+TEXCOORD_1; modeled crew seats (cushions, armoured reclined back, armrests, harness); placard overlays
+(placards.py) on the main panel, pedestal, overhead and consoles; pedestal and console knobs and
+toggles; oxygen regulator panels; cabin shadows (interior meshes cast and receive, tight 8 m sun
+shadow frustum when inside) and a cabin environment map lit only through the glazing.
+Camera guard (user, 2026-10-18: "Player camera should never go outside/clip with the plane"): nav JSON
+carries the inner hull profile; Crew.clampToHull keeps the walking / climbing eye 14 cm inside the
+skin (crew_test checks seat eyes and random walks). Tunnel hatches are real openings with open doors,
+clickable (extras.tunnel), E range 1.3 m, and a "hatch ahead" hint within 4 m.
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part

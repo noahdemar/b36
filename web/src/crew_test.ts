@@ -1,6 +1,7 @@
 // Headless checks for the crew controller against the exported nav data.
 // Run: node --experimental-strip-types src/crew_test.ts
 import { readFileSync } from "node:fs";
+import { Vector3 } from "three";
 import { Crew, type NavData } from "./crew.ts";
 
 const nav = JSON.parse(readFileSync(new URL("../public/models/b36_nav.json", import.meta.url), "utf8")) as NavData;
@@ -109,5 +110,36 @@ check(!!ua.sight && ua.sight.turrets.length === 2, "the station controls the two
 const tail = nav.seats.find((s) => s.name === "Seat_TAIL")!;
 r = walkTo(c, tail.stand[0], tail.stand[2]);
 check(r.dist < 0.3 && !r.hit, `walks to the tail gunner's station (dist ${r.dist.toFixed(2)} m${r.hit ? ", inside " + r.hit : ""})`);
+// Camera never leaves the airframe: seat eyes are inside the inner skin; random walks keep the eye inside
+{
+  const v = new Vector3();
+  const bad: string[] = [];
+  const cc = new Crew(nav);
+  for (const st of nav.seats) {
+    v.set(st.eye[0], st.eye[1], st.eye[2]);
+    const before = v.clone();
+    cc.clampToHull(v, 0.05);
+    if (before.distanceTo(v) > 1e-6) bad.push(`${st.name} (${before.distanceTo(v).toFixed(2)} m out)`);
+  }
+  check(bad.length === 0, `all seat eye points inside the hull${bad.length ? ": " + bad.join(", ") : ""}`);
+  let worst = 0;
+  for (const seat of ["Seat_AC", "Seat_FE", "Seat_RADAR", "Seat_TAIL"]) {
+    const w = new Crew(nav);
+    w.sit(seat);
+    w.standUp();
+    let seed = 7;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    for (let t = 0; t < 120; t += 1 / 30) {
+      if (Math.floor(t * 30) % 45 === 0) w.yaw = rnd() * Math.PI * 2;
+      w.update(1 / 30, { forward: 1, strafe: rnd() - 0.5, run: rnd() > 0.7, crouch: rnd() > 0.9 });
+      w.eye(v);
+      const p = v.clone();
+      w.clampToHull(p, 0.13);
+      worst = Math.max(worst, p.distanceTo(v));
+    }
+  }
+  check(worst < 1e-6, `random walks: eye always at least 13 cm inside the skin (worst ${worst.toFixed(3)} m)`);
+}
+
 console.log(failures ? `${failures} FAILED` : "all passed");
 process.exit(failures ? 1 : 0);

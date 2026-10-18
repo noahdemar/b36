@@ -14,8 +14,11 @@ export interface Seat {
 }
 export interface TunnelEnd { deck: string; stand: [number, number, number] }
 export interface Tunnel { name: string; path: [number, number, number][]; trolley: [number, number]; ends: [TunnelEnd, TunnelEnd] }
+/** Inner hull profile: radius at `angles` uniform angles from the top toward +x, per station along z. */
+export interface Hull { z0: number; step: number; angles: number; yc: number[]; r: number[][] }
+
 export interface NavData {
-  radius: number; eyeStand: number; eyeCrouch: number;
+  radius: number; eyeStand: number; eyeCrouch: number; hull?: Hull;
   decks: Deck[]; obstacles: Obstacle[]; ladders: Ladder[]; seats: Seat[]; tunnels: Tunnel[];
 }
 
@@ -113,11 +116,12 @@ export class Crew {
   nearestInteraction(): Interaction | null {
     if (this.mode !== "walking") return null;
     let best: { d: number; v: Interaction } | null = null;
+    let tunnel: { d: number; v: Interaction } | null = null;
     for (const t of this.nav.tunnels ?? []) {
       t.ends.forEach((e, i) => {
         if (e.deck !== this.deck.id) return;
         const d = Math.hypot(e.stand[0] - this.pos.x, e.stand[2] - this.pos.z);
-        if (d < 0.9 && (!best || d < best.d)) best = { d, v: { kind: "tunnel", tunnel: t, end: i as 0 | 1 } };
+        if (d < 1.3 && (!tunnel || d < tunnel.d)) tunnel = { d, v: { kind: "tunnel", tunnel: t, end: i as 0 | 1 } };
       });
     }
     for (const s of this.nav.seats) {
@@ -131,7 +135,20 @@ export class Crew {
       const d = Math.hypot(end[0] - this.pos.x, end[2] - this.pos.z);
       if (d < 0.9 && (!best || d < best.d)) best = { d, v: { kind: "ladder", ladder: l } };
     }
-    return best?.v ?? null;
+    // the tunnel hatch wins unless something else is clearly closer (it sits beside the gunner seats)
+    const tb = tunnel as { d: number; v: Interaction } | null;
+    const bb = best as { d: number; v: Interaction } | null;
+    if (tb && (!bb || tb.d < bb.d + 0.5)) return tb.v;
+    return bb?.v ?? null;
+  }
+
+  /** Distance to the nearest tunnel entrance on this deck (for a "hatch ahead" hint). */
+  tunnelDistance(): number {
+    let best = Infinity;
+    for (const t of this.nav.tunnels ?? []) for (const e of t.ends) {
+      if (e.deck === this.deck.id) best = Math.min(best, Math.hypot(e.stand[0] - this.pos.x, e.stand[2] - this.pos.z));
+    }
+    return best;
   }
 
   ceilingAt(x: number, z: number): number {
@@ -256,7 +273,29 @@ export class Crew {
       return { yaw: this.seat.yaw + this.yaw, pitch: this.pitch };
     }
     out.set(this.pos.x, this.pos.y + this.eyeHeight, this.pos.z);
+    this.clampToHull(out);
     return { yaw: this.yaw, pitch: this.pitch };
+  }
+
+  /** Keeps a point (model coordinates) inside the inner skin with a margin, so the camera never
+   * passes through the airframe. */
+  clampToHull(p: Vector3, margin = 0.14) {
+    const h = this.nav.hull;
+    if (!h) return;
+    const fi = Math.max(0, Math.min(h.yc.length - 1.001, (p.z - h.z0) / h.step));
+    const i = Math.floor(fi), t = fi - i;
+    const yc = h.yc[i] * (1 - t) + h.yc[i + 1] * t;
+    const dx = p.x, dy = p.y - yc;
+    const ang = ((Math.atan2(dx, dy) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const fa = (ang / (2 * Math.PI)) * h.angles;
+    const a0 = Math.floor(fa) % h.angles, a1 = (a0 + 1) % h.angles, ta = fa - Math.floor(fa);
+    const rAt = (row: number[]) => row[a0] * (1 - ta) + row[a1] * ta;
+    const R = rAt(h.r[i]) * (1 - t) + rAt(h.r[i + 1]) * t - margin;
+    const r = Math.hypot(dx, dy);
+    if (r > R && r > 1e-6) {
+      p.x = (dx / r) * R;
+      p.y = yc + (dy / r) * R;
+    }
   }
 }
 

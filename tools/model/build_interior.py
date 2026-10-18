@@ -27,6 +27,8 @@ from mathutils import Matrix, Vector
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_b36 as B  # noqa: E402
 import dials  # noqa: E402
+import interior_textures as IT  # noqa: E402
+import placards as PL  # noqa: E402
 import params as P  # noqa: E402
 from build_b36 import MeshBuilder, gltf_axis, revolve, to_object, tube  # noqa: E402
 
@@ -137,19 +139,115 @@ def local_tube(mb, frame, p0, p1, r, mat, seg=12, r1=None):
     tube(mb, frame @ Vector(p0), frame @ Vector(p1), r, seg=seg, mat=mat, r1=r1)
 
 
+def rbox(mb, frame, c, size, r, mat, n=6, bulge=0.0):
+    """Rounded box (cushion / casting) centred at c with full extents `size`, edge radius r, in a local
+    frame. Built from a subdivided cube whose points are pushed onto the rounded shape; `bulge` puffs
+    the large faces outward (cushion crown), as a fraction of r."""
+    hx, hy, hz = (s / 2 for s in size)
+    inner = (max(hx - r, 0), max(hy - r, 0), max(hz - r, 0))
+    idx = {}
+
+    def vert(p):
+        key = (round(p[0], 6), round(p[1], 6), round(p[2], 6))
+        if key not in idx:
+            q = Vector((max(-inner[0], min(inner[0], p[0])), max(-inner[1], min(inner[1], p[1])), max(-inner[2], min(inner[2], p[2]))))
+            d = Vector(p) - q
+            out = q + (d.normalized() * r if d.length > 1e-9 else d)
+            if bulge:
+                # crown: push outward on the faces, strongest at their centres
+                for ax, h in enumerate((hx, hy, hz)):
+                    if abs(abs(out[ax]) - h) < 1e-6:
+                        others = [i for i in range(3) if i != ax]
+                        f = 1.0
+                        for o in others:
+                            hh = (hx, hy, hz)[o]
+                            f *= max(0.0, 1 - (out[o] / hh) ** 2)
+                        out[ax] += math.copysign(bulge * r * f, out[ax])
+            idx[key] = mb.add_vert(frame @ (Vector(c) + out))
+        return idx[key]
+
+    ext = (hx, hy, hz)
+    for ax in range(3):
+        u_ax, v_ax = [(1, 2), (0, 2), (0, 1)][ax]
+        for sgn in (-1, 1):
+            grid = []
+            for i in range(n + 1):
+                row = []
+                for j in range(n + 1):
+                    p = [0.0, 0.0, 0.0]
+                    p[ax] = sgn * ext[ax]
+                    p[u_ax] = -ext[u_ax] + 2 * ext[u_ax] * i / n
+                    p[v_ax] = -ext[v_ax] + 2 * ext[v_ax] * j / n
+                    row.append(vert(p))
+                grid.append(row)
+            for i in range(n):
+                for j in range(n):
+                    a, b, cc, d = grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]
+                    # outward winding: (u x v) points along +ax for this axis order
+                    flip = (sgn > 0) != (ax == 1)
+                    mb.add_face((a, b, cc, d) if flip else (a, d, cc, b), mat)
+
+
+def decal(name, frame, u0, u1, v0, v1, png):
+    """Transparent marking quad covering local (u0..u1, v0..v1) of `frame` (image top = +v)."""
+    key = "decal_" + os.path.basename(png)
+    if key not in B.MATS:
+        m = B.make_texture_material(key, png, roughness=0.6)
+        nt = m.node_tree
+        tex = [n for n in nt.nodes if n.type == "TEX_IMAGE"][0]
+        nt.links.new(tex.outputs["Alpha"], nt.nodes["Principled BSDF"].inputs["Alpha"])
+        m.surface_render_method = "BLENDED"
+        m.use_backface_culling = False
+        B.MATS[key] = m
+    mb = MeshBuilder()
+    vs = [mb.add_vert(frame @ Vector((u, v, 0))) for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))]
+    mb.add_face(vs, key, [(0, 0), (1, 0), (1, 1), (0, 1)])
+    return to_object(name, mb)
+
+
 # ------------------------------------------------------------------ materials
+
+MAT_TILE = {}  # material name -> metres per texture repeat (box-projected UVs)
+
+
+def apply_box_uvs():
+    """Box-project UVs (world space, metres / tile) on faces with tiled materials, so textures line up
+    across objects and keep a constant texel density. Faces with atlas UVs (dials) are untouched."""
+    for ob in bpy.data.objects:
+        if ob.type != "MESH":
+            continue
+        me = ob.data
+        if not any(m and m.name in MAT_TILE for m in me.materials):
+            continue
+        layer = me.uv_layers.get("UVMap") or me.uv_layers.new(name="UVMap")
+        mw = ob.matrix_world
+        rot = mw.to_3x3()
+        for poly in me.polygons:
+            m = me.materials[poly.material_index]
+            tile = MAT_TILE.get(m.name) if m else None
+            if not tile:
+                continue
+            n = rot @ poly.normal
+            ax = max(range(3), key=lambda i: abs(n[i]))
+            a, b = [(1, 2), (0, 2), (0, 1)][ax]
+            for li in poly.loop_indices:
+                v = mw @ me.vertices[me.loops[li].vertex_index].co
+                layer.data[li].uv = (v[a] / tile, v[b] / tile)
 
 def init_materials():
     B.init_materials()
     mk = B.make_material
     M = B.MATS
-    M["interior"] = mk("InteriorGreen", (0.10, 0.13, 0.11), 0.0, 0.75)
-    M["insulation"] = mk("Insulation", (0.035, 0.04, 0.045), 0.0, 0.95)
-    M["panel"] = mk("PanelBlack", (0.018, 0.018, 0.02), 0.1, 0.55)
-    M["console"] = mk("ConsoleGreen", (0.16, 0.22, 0.20), 0.0, 0.7)
-    M["cushion"] = mk("CushionGreen", (0.22, 0.28, 0.12), 0.0, 0.95)
-    M["seatframe"] = mk("SeatFrame", (0.10, 0.12, 0.10), 0.6, 0.5)
-    M["floor"] = mk("Floor", (0.06, 0.065, 0.06), 0.2, 0.8)
+    # Tiled PBR materials (interior_textures.py); UVs are box-projected in apply_box_uvs()
+    maps = IT.build_all(os.path.join(TEX_DIR, "interior"))
+    tiled = {"interior": ("InteriorGreen", "paint_green"), "console": ("ConsoleGreen", "paint_green"),
+             "insulation": ("Insulation", "quilt"), "panel": ("PanelBlack", "paint_panel"),
+             "black": ("FrameBlack", "paint_panel"), "equip": ("EquipmentBlack", "paint_black"), "cushion": ("CushionCanvas", "canvas"), "webbing": ("Webbing", "webbing"),
+             "seatframe": ("SeatFrame", "metal_dark"), "floor": ("Floor", "floor")}
+    MAT_TILE.clear()
+    for key, (name, tex) in tiled.items():
+        M[key] = B.make_skin_material(name, maps[tex])
+        MAT_TILE[name] = IT.TILE_M[tex]
     M["needle"] = mk("Needle", (0.95, 0.93, 0.85), 0.0, 0.4)
     M["needle_orange"] = mk("NeedleOrange", (0.95, 0.45, 0.05), 0.0, 0.4)
     M["knob"] = mk("Knob", (0.03, 0.03, 0.03), 0.0, 0.45)
@@ -233,17 +331,8 @@ def build_floors():
         tube(mb, W(-1.15, dd, z), W(-0.45, dd, z), 0.018, seg=8, mat="seatframe")
     to_object("Int_Ladder", mb, extras={"ladder": "fwd"})
 
-    # Aft bulkhead with tunnel hatch (tunnel runs aft over the bomb bays)
-    mb = MeshBuilder()
-    d = DECK_END_D
-    frame = frame_from(W(0, d, B.fus_center_z(d)), (1, 0, 0), (0, 0, 1))
-    r = B.fus_radius(d) - 0.06
-    pts = [(r * math.cos(2 * math.pi * k / 48), r * math.sin(2 * math.pi * k / 48)) for k in range(48)]
-    polygon_plate(mb, frame, pts, 0.04, "interior")
-    hatch = frame_from(W(P.TUNNEL["x"], d - 0.005, P.TUNNEL["z"]), (1, 0, 0), (0, 0, 1))
-    disc(mb, hatch, P.TUNNEL["r"], 0.0, mat="insulation", seg=32)
-    annulus(mb, hatch, P.TUNNEL["r"], P.TUNNEL["r"] + 0.07, 0.005, "seatframe", seg=32)
-    to_object("Int_AftBulkhead", mb)
+    # Aft bulkhead with the open tunnel hatch (tunnel runs aft over the bomb bays)
+    bulkhead("Int_AftBulkhead", DECK_END_D, [(P.TUNNEL["x"], P.TUNNEL["z"], P.TUNNEL["r"], "fwd")], door_dir=-1)
 
 
 # ------------------------------------------------------------------ main panel and instruments
@@ -269,6 +358,7 @@ P_CLUSTER = [  # pilot (right)
     ("alt", 0.46, 1.06, 0.052), ("turn", 0.70, 1.03, 0.045), ("vsi", 0.94, 1.02, 0.048),
 ]
 JET_ROWS = ["jet_rpm", "jet_egt", "jet_fuel", "jet_oil"]
+LAMP_V = 1.43  # propeller reverse warning lamps, above the jet group title
 
 # value sources (client sim variable names) per dial kind; list = one entry per needle
 SOURCES = {
@@ -396,13 +486,12 @@ def build_panel(uv):
     # Reversed-prop warning lights above the jet block
     for k in range(6):
         u = -0.25 + 0.1 * k
-        disc(mb, F @ Matrix.Translation((u, 1.405 - INST_DROP, 0)), 0.014, 0.012, mat="lamp_red", seg=16)
-        annulus(mb, F @ Matrix.Translation((u, 1.405 - INST_DROP, 0)), 0.014, 0.022, 0.012, "chrome", seg=16)
-    # Placards
-    for u, v in ((0.30, 1.17), (-0.30, 0.74)):
-        polygon_plate(mb, F @ Matrix.Translation((u, v, 0.004)), [(-0.07, -0.03), (0.07, -0.03), (0.07, 0.03), (-0.07, 0.03)],
-                      0.002, "placard")
+        disc(mb, F @ Matrix.Translation((u, LAMP_V - INST_DROP, 0)), 0.014, 0.012, mat="lamp_red", seg=16)
+        annulus(mb, F @ Matrix.Translation((u, LAMP_V - INST_DROP, 0)), 0.014, 0.022, 0.012, "chrome", seg=16)
     to_object("Int_Panel", mb)
+    jb = (-0.195 - 0.07, -0.195 + 0.39 + 0.07, 1.30 - 0.39 - INST_DROP - 0.07, 1.30 - INST_DROP + 0.07)
+    png = PL.main_panel(os.path.join(TEX_DIR, "interior", "panel_markings.png"), AC_CLUSTER, P_CLUSTER, jb, INST_DROP, LAMP_V)
+    decal("Int_PanelMarkings", F @ Matrix.Translation((0, 0, 0.003)), -1.40, 1.40, 0.68, 1.42, png)
     obstacle("main_panel", -1.7, 1.7, 3.30, PANEL_D + 0.06, FLOOR_Z, 1.65)
 
     for side, cluster in (("L", AC_CLUSTER), ("R", P_CLUSTER)):
@@ -473,6 +562,19 @@ def build_pedals(side, sx):
         ctl(f"Pedal_{side}_{ps}", mb, f, "pedal", (1, 0, 0), -0.25, 0.25, seat=side, side=ps)
 
 
+def knob(mb, frame, u, v, r, h, mat="knob"):
+    """Round control knob with a pointer line, on a local surface (Z up)."""
+    local_tube(mb, frame, (u, v, 0), (u, v, h), r, mat, seg=14)
+    disc(mb, frame @ Matrix.Translation((u, v, h)), r, 0.0, mat=mat, seg=14)
+    box(mb, frame, u - 0.0015, u + 0.0015, v, v + r * 0.9, h, h + 0.001, "needle")
+
+
+def toggle(mb, frame, u, v, mat="chrome"):
+    """Toggle switch: hex nut and a bat handle leaning forward."""
+    local_tube(mb, frame, (u, v, 0), (u, v, 0.006), 0.008, "knob", seg=6)
+    local_tube(mb, frame, (u, v, 0.006), (u, v + 0.006, 0.022), 0.0025, mat, seg=6, r1=0.0035)
+
+
 def build_pedestal(uv):
     mb = MeshBuilder()
     d0, d1 = PANEL_D, 4.78
@@ -486,14 +588,39 @@ def build_pedestal(uv):
     b = corners[4:]
     mb.add_face((a[0], a[3], a[2], a[1]), "panel")      # left side (normal -x)
     mb.add_face((b[0], b[1], b[2], b[3]), "panel")      # right side
-    mb.add_face((a[3], b[3], b[2], a[2]), "panel")      # top
+    mb.add_face((a[3], b[3], b[2], a[2]), "equip")      # top
     mb.add_face((a[1], a[2], b[2], b[1]), "panel")      # back
     mb.add_face((a[0], b[0], b[3], a[3]), "panel")      # front
-    # quadrant slots
+    # top frame: X right, Y forward along the sloped top, Z up; v = 0 at the front edge, negative aft
+    org = W(0, d0, top_front)
+    tf = frame_from(org, (1, 0, 0), org - W(0, d1, top_back))
+    # throttle quadrant housing with lever slots (levers pivot at d 4.06)
+    rbox(mb, tf, (0, -0.44, 0.03), (0.40, 0.30, 0.06), 0.02, "equip", n=4)
     for k in range(6):
-        x = -0.15 + 0.06 * k
-        wbox(mb, x - 0.008, x + 0.008, 3.92, 4.20, 0.675, 0.69, "knob")
+        u = -0.15 + 0.06 * k
+        box(mb, tf, u - 0.007, u + 0.007, -0.58, -0.30, 0.0595, 0.0615, "knob")
+    rbox(mb, tf, (-0.205, -0.40, 0.075), (0.03, 0.05, 0.03), 0.01, "knob_red", n=2)  # throttle lock
+    # autopilot controller at the front: knobs and toggles
+    for k in range(4):
+        knob(mb, tf, -0.15 + 0.10 * k, -0.08, 0.016, 0.018)
+    for k in range(5):
+        toggle(mb, tf, -0.16 + 0.08 * k, -0.18)
+    # rudder trim wheel (flat donut) and aileron trim switch
+    ring = [tf @ Vector((0.06 * math.cos(2 * math.pi * k / 24), -0.68 + 0.06 * math.sin(2 * math.pi * k / 24), 0.03)) for k in range(25)]
+    for p0, p1 in zip(ring, ring[1:]):
+        tube(mb, p0, p1, 0.018, seg=10, mat="knob")
+    local_tube(mb, tf, (0, -0.68, 0.0), (0, -0.68, 0.03), 0.02, "knob", seg=12)
+    toggle(mb, tf, 0.0, -0.80)
+    toggle(mb, tf, 0.15, -0.52)
+    # prop reverse selector and radio panels
+    for k in range(3):
+        toggle(mb, tf, -0.07 + 0.07 * k, -0.89)
+    for v, n in ((-0.97, 4), (-1.05, 3), (-1.12, 4)):
+        for k in range(n):
+            knob(mb, tf, -0.15 + 0.30 * k / max(n - 1, 1), v, 0.013, 0.016)
     to_object("Int_Pedestal", mb)
+    png = PL.pedestal_top(os.path.join(TEX_DIR, "interior", "pedestal_markings.png"))
+    decal("Int_PedestalMarkings", tf @ Matrix.Translation((0, 0, 0.002)), -0.24, 0.24, -1.16, 0.0, png)
     obstacle("pedestal", -0.24, 0.24, PANEL_D, 4.78, FLOOR_Z, 0.72)
 
     # Piston throttles T1..T6 (pivot below the quadrant top; forward = more power)
@@ -530,11 +657,14 @@ def build_overhead():
     """Jet engine control panel overhead between the pilots, with 4 jet throttles."""
     mb = MeshBuilder()
     wbox(mb, -0.33, 0.33, 3.95, 4.75, 2.02, 2.30, "panel")
+    down = frame_from(W(0, 3.95, 2.0195), (1, 0, 0), (0, -1, 0))  # Z down toward the crew, Y aft
     for k in range(5):
         for j in range(3):
-            x = -0.24 + 0.12 * k
-            disc(mb, frame_from(W(x, 4.3 + 0.13 * j, 2.019), (1, 0, 0), (0, 1, 0)), 0.012, 0.0, mat="chrome", seg=12)
+            toggle(mb, down, -0.24 + 0.12 * k, 0.35 + 0.13 * j)
     to_object("Int_Overhead", mb)
+    png = PL.overhead(os.path.join(TEX_DIR, "interior", "overhead_markings.png"))
+    # image top toward the front; seen from below (double-sided decal)
+    decal("Int_OverheadMarkings", frame_from(W(0, 3.95, 2.0185), (1, 0, 0), (0, 1, 0)), -0.33, 0.33, -0.80, 0.0, png)
     obstacle("overhead", -0.33, 0.33, 3.95, 4.75, 2.02, 2.30)
     for k in range(4):
         x = -0.15 + 0.10 * k
@@ -546,6 +676,55 @@ def build_overhead():
         ctl(f"JetThrottle_{k + 1}", lm, fr, "jet_throttle", (1, 0, 0), -0.45, 0.45, engine=k + 1)
 
 
+def strap(mb, frame, pts, w, t, mat="webbing"):
+    """Flat webbing strap through local points (strap width along local X)."""
+    for p0, p1 in zip(pts, pts[1:]):
+        p0, p1 = Vector(p0), Vector(p1)
+        mid = (p0 + p1) / 2
+        dirv = p1 - p0
+        ln = dirv.length
+        fr = frame @ frame_from(mid, (1, 0, 0), dirv)
+        box(mb, fr, -w / 2, w / 2, -ln / 2 - 0.004, ln / 2 + 0.004, -t / 2, t / 2, mat)
+
+
+def seat_geometry(mb, f, cz):
+    """Crew seat in its local frame (X right, Y facing, Z up, origin on the floor below the pan centre):
+    floor rails and post frame, pan with cushion, armoured back reclined 12 deg with cushion and headrest,
+    padded armrests, shoulder harness and lap belt. Proportions ESTIMATED from the NMUSAF flight deck photo."""
+    # floor rails, posts and adjuster box
+    for sx in (-0.17, 0.17):
+        local_tube(mb, f, (sx, -0.26, 0.02), (sx, 0.24, 0.02), 0.018, "seatframe", seg=10)
+        for sy in (-0.18, 0.16):
+            local_tube(mb, f, (sx, sy, 0.02), (sx * 0.8, sy * 0.9, cz - 0.10), 0.016, "seatframe", seg=10)
+    rbox(mb, f, (0, -0.02, cz - 0.16), (0.30, 0.26, 0.10), 0.015, "seatframe", n=2)
+    local_tube(mb, f, (0.15, 0.20, cz - 0.15), (0.24, 0.30, cz - 0.17), 0.008, "chrome", seg=8)  # adjust lever
+    # pan: metal shell and cushion
+    rbox(mb, f, (0, 0, cz - 0.075), (0.52, 0.50, 0.05), 0.012, "equip", n=3)
+    rbox(mb, f, (0, 0.01, cz), (0.48, 0.47, 0.11), 0.045, "cushion", n=7, bulge=0.5)
+    # reclined back: armour plate, cushion, headrest (hinge at the rear of the pan)
+    hb = f @ Matrix.Translation((0, -0.25, cz - 0.05)) @ Matrix.Rotation(math.radians(12), 4, "X")  # +X rotation tips the top aft
+    rbox(mb, hb, (0, -0.02, 0.44), (0.54, 0.028, 0.90), 0.012, "equip", n=4)
+    for sx in (-1, 1):  # side flanges of the armour
+        rbox(mb, hb, (sx * 0.262, 0.04, 0.40), (0.02, 0.12, 0.80), 0.008, "equip", n=2)
+    rbox(mb, hb, (0, 0.05, 0.38), (0.46, 0.10, 0.62), 0.045, "cushion", n=7, bulge=0.5)
+    rbox(mb, hb, (0, 0.04, 0.80), (0.28, 0.08, 0.15), 0.035, "cushion", n=5, bulge=0.4)
+    # armrests: tube support and padded top
+    for sx in (-0.30, 0.30):
+        local_tube(mb, f, (sx, -0.20, cz + 0.02), (sx, -0.20, cz + 0.20), 0.012, "seatframe", seg=8)
+        local_tube(mb, f, (sx, 0.12, cz + 0.02), (sx, 0.12, cz + 0.20), 0.012, "seatframe", seg=8)
+        rbox(mb, f, (sx, -0.04, cz + 0.225), (0.07, 0.38, 0.05), 0.022, "cushion", n=4, bulge=0.3)
+    # harness: shoulder straps over the back cushion, lap belt across the pan, buckle
+    inv = f.inverted()
+    for sx in (-0.09, 0.09):
+        p_top = inv @ (hb @ Vector((sx, 0.11, 0.70)))
+        p_mid = inv @ (hb @ Vector((sx * 0.8, 0.112, 0.35)))
+        strap(mb, f, [inv @ (hb @ Vector((sx, -0.04, 0.92))), inv @ (hb @ Vector((sx, 0.09, 0.90))), p_top, p_mid,
+                      inv @ (hb @ Vector((sx * 0.6, 0.11, 0.10)))], 0.045, 0.006)
+    for sx in (-1, 1):
+        strap(mb, f, [(sx * 0.25, -0.20, cz + 0.03), (sx * 0.22, -0.05, cz + 0.06), (sx * 0.06, 0.06, cz + 0.06)], 0.05, 0.006)
+    rbox(mb, f, (0, 0.07, cz + 0.065), (0.09, 0.06, 0.015), 0.004, "chrome", n=2)
+
+
 def build_seat(name, station, x, d, yaw, floor=None, eye_up=1.27, stand=None, flies=False):
     """Crew seat centred at (x, d) on a deck, facing yaw (0 = forward, +pi/2 = left, pi = aft).
     Registers collision, the sit eye point and the stand-up point."""
@@ -554,13 +733,7 @@ def build_seat(name, station, x, d, yaw, floor=None, eye_up=1.27, stand=None, fl
     f = frame_from(W(x, d, floor), (fwd.y, -fwd.x, 0), fwd)  # local X right, Y facing, Z up
     mb = MeshBuilder()
     cz = 0.47
-    box(mb, f, -0.20, 0.20, -0.18, 0.18, 0.0, cz - 0.10, "seatframe")
-    box(mb, f, -0.25, 0.25, -0.24, 0.24, cz - 0.10, cz, "cushion")
-    box(mb, f, -0.25, 0.25, -0.34, -0.24, cz, cz + 0.70, "cushion")
-    box(mb, f, -0.12, 0.12, -0.34, -0.22, cz + 0.74, cz + 0.96, "cushion")  # headrest
-    box(mb, f, -0.02, 0.02, -0.31, -0.27, cz + 0.70, cz + 0.74, "seatframe")
-    for ax in (-0.29, 0.29):  # armrests
-        box(mb, f, ax - 0.035, ax + 0.035, -0.20, 0.20, cz + 0.20, cz + 0.25, "seatframe")
+    seat_geometry(mb, f, cz)
     to_object(name, mb, extras={"sit": name})
     corners = [f @ Vector((u, v, 0)) for u in (-0.30, 0.30) for v in (-0.36, 0.26)]
     obstacle(name.lower(), min(c.x for c in corners), max(c.x for c in corners),
@@ -585,20 +758,80 @@ def build_forward_gunners():
         SEATS[-1]["sight"] = {"eye": [c.x - sx * 0.12, c.z, d - P.NOSE_Y], "turrets": ["Turret_UpperFwd_L", "Turret_UpperFwd_R"]}
 
 
-def bulkhead(name, d, holes, mat="interior"):
-    """Pressure bulkhead plate at station d with dark openings: list of (x, z, r)."""
+def holed_plate(mb, frame, outer, holes, thick, mat):
+    """Flat plate (local XY, both faces, thickness along -Z) with circular openings, triangulated
+    with bmesh triangle_fill; outer: list of (x, y); holes: list of (cx, cy, r)."""
+    import bmesh
+    bm = bmesh.new()
+    loops = [outer] + [[(cx + r * math.cos(2 * math.pi * k / 40), cy + r * math.sin(2 * math.pi * k / 40)) for k in range(40)]
+                       for cx, cy, r in holes]
+    edges = []
+    for lp in loops:
+        vs = [bm.verts.new((x, y, 0.0)) for x, y in lp]
+        edges += [bm.edges.new((vs[i], vs[(i + 1) % len(vs)])) for i in range(len(vs))]
+    res = bmesh.ops.triangle_fill(bm, use_beauty=True, use_dissolve=False, edges=edges)
+    for f in res["geom"]:
+        if not isinstance(f, bmesh.types.BMFace):
+            continue
+        pts = [Vector((v.co.x, v.co.y, 0.0)) for v in f.verts]
+        if (pts[1] - pts[0]).cross(pts[2] - pts[0]).z < 0:
+            pts.reverse()
+        mb.add_face([mb.add_vert(frame @ p) for p in pts], mat)
+        mb.add_face([mb.add_vert(frame @ Vector((p.x, p.y, -thick))) for p in reversed(pts)], mat)
+    bm.free()
+    n = len(outer)
+    for i in range(n):  # rim
+        a, b = outer[i], outer[(i + 1) % n]
+        mb.add_face([mb.add_vert(frame @ Vector((a[0], a[1], 0))), mb.add_vert(frame @ Vector((a[0], a[1], -thick))),
+                     mb.add_vert(frame @ Vector((b[0], b[1], -thick))), mb.add_vert(frame @ Vector((b[0], b[1], 0)))], mat)
+
+
+def bulkhead(name, d, holes, mat="interior", door_dir=-1):
+    """Pressure bulkhead plate at station d. holes: (x, z, r, tunnel_end_or_None). A hole with a tunnel
+    end is a real opening with a framed rim, an open hatch door and a handle, exported as a clickable
+    "Int_TunnelHatch_<end>" (extras.tunnel); others are closed, dark hatches. door_dir: side of the plate
+    the cabin is on (-1 forward, +1 aft); open doors swing to that side."""
     mb = MeshBuilder()
-    frame = frame_from(W(0, d, B.fus_center_z(d)), (1, 0, 0), (0, 0, 1))
+    zc = B.fus_center_z(d)
+    frame = frame_from(W(0, d, zc), (1, 0, 0), (0, 0, 1))  # local Z points aft
     r = B.fus_radius(d) - 0.06
-    pts = [(r * math.cos(2 * math.pi * k / 48), r * math.sin(2 * math.pi * k / 48)) for k in range(48)]
-    polygon_plate(mb, frame, pts, 0.04, mat)
-    for x, z, hr in holes:
-        hf = frame_from(W(x, d - 0.005, z), (1, 0, 0), (0, 0, 1))
-        disc(mb, hf, hr, 0.0, mat="insulation", seg=32)
-        annulus(mb, hf, hr, hr + 0.07, 0.005, "seatframe", seg=32)
-        hb = frame_from(W(x, d + 0.045, z), (1, 0, 0), (0, 0, -1))
-        disc(mb, hb, hr, 0.0, mat="insulation", seg=32)
+    outer = [(r * math.cos(2 * math.pi * k / 64), r * math.sin(2 * math.pi * k / 64)) for k in range(64)]
+    t = 0.04
+    open_holes = [(x, z - zc, hr) for x, z, hr, end in holes if end]
+    holed_plate(mb, frame, outer, open_holes, t, mat)
     to_object(name, mb)
+    for x, z, hr, end in holes:
+        hm = MeshBuilder()
+        hf = frame_from(W(x, d, z), (1, 0, 0), (0, 0, 1))
+        if not end:
+            for zz, sgn in ((-t - 0.005, -1), (0.005, 1)):
+                disc(hm, hf @ Matrix.Translation((0, 0, zz)) @ (Matrix.Rotation(math.pi, 4, "X") if sgn < 0 else Matrix.Identity(4)),
+                     hr, 0.0, mat="insulation", seg=32)
+            annulus(hm, hf @ Matrix.Translation((0, 0, -t - 0.006)) @ Matrix.Rotation(math.pi, 4, "X"), hr, hr + 0.07, 0.0, "seatframe", seg=32)
+            to_object(f"{name}_Hatch", hm)
+            continue
+        # framed opening: inner wall, flanges both sides
+        ring0 = [hf @ Vector((hr * math.cos(2 * math.pi * k / 40), hr * math.sin(2 * math.pi * k / 40), 0.006)) for k in range(40)]
+        ring1 = [hf @ Vector((hr * math.cos(2 * math.pi * k / 40), hr * math.sin(2 * math.pi * k / 40), -t - 0.006)) for k in range(40)]
+        hm.loft([ring1, ring0], closed=True, mat="seatframe")
+        annulus(hm, hf @ Matrix.Translation((0, 0, 0.006)), hr, hr + 0.07, 0.0, "seatframe", seg=40)
+        annulus(hm, hf @ Matrix.Translation((0, 0, -t - 0.006)) @ Matrix.Rotation(math.pi, 4, "X"), hr, hr + 0.07, 0.0, "seatframe", seg=40)
+        # hatch door swung 100 deg open into the cabin, hinged on the outboard side (local Z points aft)
+        side = 1 if x <= 0 else -1
+        face_z = -t - 0.01 if door_dir < 0 else 0.01
+        hinge = Vector((-side * (hr + 0.05), 0, face_z))
+        ang = side * math.radians(100) * (1 if door_dir < 0 else -1)
+        door = hf @ Matrix.Translation(hinge) @ Matrix.Rotation(ang, 4, "Y") @ Matrix.Translation(-hinge)
+        df = door @ Matrix.Translation((0, 0, face_z - 0.02 if door_dir < 0 else face_z + 0.05))
+        disc(hm, df, hr + 0.04, 0.0, mat="equip", seg=32)
+        disc(hm, df @ Matrix.Translation((0, 0, -0.03)) @ Matrix.Rotation(math.pi, 4, "X"), hr + 0.04, 0.0, mat="equip", seg=32)
+        rim = [[df @ Vector(((hr + 0.04) * math.cos(2 * math.pi * k / 32), (hr + 0.04) * math.sin(2 * math.pi * k / 32), z)) for k in range(32)]
+               for z in (-0.03, 0.0)]
+        hm.loft(rim, closed=True, mat="equip")
+        local_tube(hm, df, (side * (hr - 0.08), -0.08, -0.03), (side * (hr - 0.08), -0.08, -0.07), 0.008, "chrome", seg=8)
+        local_tube(hm, df, (side * (hr - 0.08), -0.08, -0.07), (side * (hr - 0.08), 0.08, -0.07), 0.009, "chrome", seg=8)
+        local_tube(hm, df, (side * (hr - 0.08), 0.08, -0.07), (side * (hr - 0.08), 0.08, -0.03), 0.008, "chrome", seg=8)
+        to_object(f"Int_TunnelHatch_{end}", hm, extras={"tunnel": end})
 
 
 def build_tunnel():
@@ -624,7 +857,7 @@ def build_tunnel():
     for d in [d0 + 3.0 * k + 1.5 for k in range(int((d1 - d0) / 3.0))]:  # dome lights
         disc(tm, frame_from(W(T["x"], d, T["z"] + T["r"] - 0.02), (1, 0, 0), (0, 1, 0)) @ Matrix.Rotation(math.pi, 4, "X"),
              0.04, 0.0, mat="lamp_white", seg=12)
-    to_object("Int_Tunnel", tm)
+    to_object("Int_Tunnel", tm, extras={"tunnel": "tube"})
     # trolley: flat board on four wheels, moved by the client with the crew member
     trm = MeshBuilder()
     zf = T["z"] - T["r"] + 0.06
@@ -634,7 +867,7 @@ def build_tunnel():
             revolve(trm, lambda t, sx=sx, sy=sy: Vector((sx + t, sy, -0.02)), [(-0.015, 0.03), (0.015, 0.03)], axis="x",
                     seg=10, mat="knob", cap_start=True, cap_end=True)
     f = frame_from(W(T["x"], d0 + 1.0, zf), (1, 0, 0), (0, 1, 0))
-    to_object("Tunnel_Trolley", transformed(trm, f), frame=f, extras={"trolley": "tunnel"})
+    to_object("Tunnel_Trolley", transformed(trm, f), frame=f, extras={"trolley": "tunnel", "tunnel": "trolley"})
 
 
 def build_aft_compartment(uv):
@@ -642,8 +875,8 @@ def build_aft_compartment(uv):
     d0, d1 = P.AFT_COMP_D
     fz = P.AFT_FLOOR_Z
     T = P.TUNNEL
-    bulkhead("Int_AftFwdBulkhead", d0, [(T["x"], T["z"], T["r"])])
-    bulkhead("Int_AftRearBulkhead", d1 - 0.04, [(0.0, fz + 0.95, 0.38)])
+    bulkhead("Int_AftFwdBulkhead", d0 + 0.04, [(T["x"], T["z"], T["r"], "aft")], door_dir=1)
+    bulkhead("Int_AftRearBulkhead", d1, [(0.0, fz + 0.95, 0.38, None)])
     mb = MeshBuilder()
     t = 0.05
     for a, b in ((d0, 37.2), (37.2, d1)):
@@ -725,17 +958,49 @@ def build_lower_deck():
 
 
 def build_consoles():
+    """Side consoles (grey-green, photo) with black control panels on top, oxygen regulator panels on
+    the side walls and a map case aft. Panel contents are representative."""
     for sx in (-1, 1):
+        side = "L" if sx < 0 else "R"
         mb = MeshBuilder()
         x_out = sx * (hull_half_width(4.6, 0.95) - 0.02)
         x_in = sx * 1.10
-        wbox(mb, min(x_in, x_out), max(x_in, x_out), 3.70, 5.70, FLOOR_Z, 0.95, "console")
-        for k in range(6):
-            for j in range(2):
-                disc(mb, frame_from(W(sx * (1.17 + 0.14 * j), 3.9 + 0.3 * k, 0.951), (1, 0, 0), (0, 1, 0)),
-                     0.018, 0.0, mat="knob", seg=12)
-        to_object(f"Int_Console_{'L' if sx < 0 else 'R'}", mb)
-        obstacle(f"console_{'L' if sx < 0 else 'R'}", x_in, x_out, 3.70, 5.70, FLOOR_Z, 0.95)
+        xm, xw = (x_in + x_out) / 2, abs(x_out - x_in)
+        wbox(mb, min(x_in, x_out), max(x_in, x_out), 3.70, 5.70, FLOOR_Z, 0.92, "console")
+        top = frame_from(W(xm, 4.70, 0.92), (1, 0, 0), (0, 1, 0))  # X right, Y forward, Z up
+        rbox(mb, top, (0, 0, 0.01), (xw + 0.02, 2.02, 0.03), 0.012, "console", n=3)  # rounded lip
+        # black inset panels with knobs and toggles (front panel left free for the tiller on the left side)
+        panels = [(0.55, 0.30), (0.10, 0.45), (-0.50, 0.55)] if sx > 0 else [(0.05, 0.40), (-0.50, 0.55)]
+        for k, (cy, ln) in enumerate(panels):
+            box(mb, top, -xw / 2 + 0.02, xw / 2 - 0.02, cy - ln / 2, cy + ln / 2, 0.025, 0.031, "equip")
+            pf = top @ Matrix.Translation((0, 0, 0.031))
+            for j in range(int(ln / 0.11)):
+                v = cy - ln / 2 + 0.06 + 0.11 * j
+                if (j + k) % 2:
+                    knob(mb, pf, -xw / 4, v, 0.014, 0.016)
+                    toggle(mb, pf, xw / 4, v)
+                else:
+                    toggle(mb, pf, -xw / 4, v)
+                    toggle(mb, pf, 0.0, v)
+                    knob(mb, pf, xw / 4, v, 0.012, 0.014, mat="knob_red" if j == 0 and k == 0 else "knob")
+        png = PL.console(os.path.join(TEX_DIR, "interior", f"console_{side}.png"), xw, panels, sx)
+        decal(f"Int_ConsoleMarkings_{side}", top @ Matrix.Translation((0, 0, 0.0315)), -xw / 2, xw / 2, -1.0, 1.0, png)
+        # oxygen regulator panel on the wall above the console
+        wall_x = sx * (hull_half_width(5.05, 1.25) - 0.03)
+        of = frame_from(W(wall_x, 5.05, 1.22), (0, -1, 0) if sx < 0 else (0, 1, 0), (0, 0, 1))  # Z toward the cabin
+        rbox(mb, of, (0, 0, 0.04), (0.20, 0.24, 0.08), 0.01, "equip", n=3)
+        disc(mb, of @ Matrix.Translation((0, 0.04, 0.081)), 0.035, 0.0, mat="dial", uv_rect=None, seg=24)
+        annulus(mb, of @ Matrix.Translation((0, 0.04, 0.081)), 0.035, 0.043, 0.002, "chrome", seg=24)
+        local_tube(mb, of, (-0.05, -0.07, 0.08), (0.03, -0.07, 0.095), 0.008, "knob_red", seg=8)  # emergency lever
+        local_tube(mb, of, (0.06, -0.07, 0.08), (0.06, -0.07, 0.10), 0.012, "knob", seg=10)
+        # oxygen hose looping down to the seat
+        hose = [of @ Vector((0.0, -0.13, 0.05)), of @ Vector((0.02, -0.30, 0.18)), of @ Vector((0.0, -0.42, 0.30))]
+        for p0, p1 in zip(hose, hose[1:]):
+            tube(mb, p0, p1, 0.016, seg=10, mat="knob")
+        # map case at the aft end of the console
+        wbox(mb, min(x_in, x_out) + 0.02, max(x_in, x_out) - 0.02, 5.45, 5.68, 0.92, 1.12, "equip")
+        to_object(f"Int_Console_{side}", mb)
+        obstacle(f"console_{side}", x_in, x_out, 3.70, 5.70, FLOOR_Z, 0.95)
     # Nose wheel steering tiller on the left console
     tm = MeshBuilder()
     rings = []
@@ -880,12 +1145,87 @@ def export_nav(path):
     }]
     seats = [{**st, "eye": [st["eye"][0], st["eye"][2], zc(st["eye"][1])],
               "stand": [st["stand"][0], st["stand"][2], zc(st["stand"][1])]} for st in SEATS]
-    nav = {"units": "m", "frame": "model (x right, y up, z aft)", "radius": r, "eyeStand": 1.62,
+    # inner hull profile for the camera guard: radius (inner skin, canopy included) at uniform angles from
+    # the top (toward +x), per station; model coordinates (centre y = build z, station z = d - NOSE_Y)
+    n_ang, step, d0, d1 = 48, 0.25, 0.0, 46.0
+    stations = [d0 + step * k for k in range(int((d1 - d0) / step) + 1)]
+    hull = {"z0": d0 - P.NOSE_Y, "step": step, "angles": n_ang,
+            "yc": [round(B.fus_center_z(d), 4) for d in stations],
+            "r": [[round(B.fus_radius(d) + B.canopy_hump(d, 2 * math.pi * a / n_ang) - 0.06, 4) for a in range(n_ang)]
+                  for d in stations]}
+    nav = {"units": "m", "frame": "model (x right, y up, z aft)", "radius": r, "eyeStand": 1.62, "hull": hull,
            "eyeCrouch": 1.05, "decks": decks, "obstacles": obstacles, "ladders": ladders, "tunnels": tunnels,
            "seats": seats}
     with open(path, "w") as fh:
         json.dump(nav, fh, separators=(",", ":"))
     print("nav:", path, len(obstacles), "obstacles", len(seats), "seats")
+
+
+def bake_ao(res, samples, distance=0.5):
+    """Ambient occlusion lightmap shared by every interior mesh: second UV set "Lightmap" (smart
+    project, packed together), Cycles AO bake, exported as the glTF occlusion texture (TEXCOORD_1)."""
+    import time
+    t0 = time.time()
+    obs = [o for o in bpy.data.objects if o.type == "MESH" and len(o.data.polygons)]
+    for o in obs:
+        lm = o.data.uv_layers.get("Lightmap") or o.data.uv_layers.new(name="Lightmap")
+        o.data.uv_layers.active = lm
+    vl = bpy.context.view_layer
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in obs:
+        o.select_set(True)
+    vl.objects.active = obs[0]
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=0.0015, area_weight=0.0, scale_to_bounds=False)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    print(f"lightmap uv: {len(obs)} objects, {time.time() - t0:.0f} s")
+
+    img = bpy.data.images.new("InteriorAO", res, res, alpha=False, float_buffer=False)
+    img.colorspace_settings.name = "Non-Color"
+    mats = {m for o in obs for m in o.data.materials if m}
+    ng = bpy.data.node_groups.get("glTF Material Output")
+    if ng is None:
+        ng = bpy.data.node_groups.new("glTF Material Output", "ShaderNodeTree")
+        ng.interface.new_socket(name="Occlusion", in_out="INPUT", socket_type="NodeSocketFloat")
+    for m in mats:
+        nt = m.node_tree
+        uvn = nt.nodes.new("ShaderNodeUVMap")
+        uvn.uv_map = "Lightmap"
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.image = img
+        nt.links.new(uvn.outputs["UV"], tex.inputs["Vector"])
+        nt.nodes.active = tex  # bake target
+        sep = nt.nodes.new("ShaderNodeSeparateColor")
+        nt.links.new(tex.outputs["Color"], sep.inputs["Color"])
+        grp = nt.nodes.new("ShaderNodeGroup")
+        grp.node_tree = ng
+        nt.links.new(sep.outputs["Red"], grp.inputs["Occlusion"])
+    sc = bpy.context.scene
+    sc.render.engine = "CYCLES"
+    sc.cycles.device = "CPU"
+    sc.cycles.samples = samples
+    if sc.world is None:
+        sc.world = bpy.data.worlds.new("World")
+    sc.world.light_settings.distance = distance
+    sc.render.bake.margin = 6
+    t1 = time.time()
+    bpy.ops.object.bake(type="AO", use_clear=True)
+    print(f"ao bake {res}px {samples} spp: {time.time() - t1:.0f} s")
+    # light denoise: 3x3 box blur (islands have a 6 px margin)
+    import numpy as np
+    px = np.array(img.pixels[:], np.float32).reshape(res, res, 4)
+    g = px[..., 0]
+    g = sum(np.roll(np.roll(g, dy, 0), dx, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1)) / 9
+    px[..., 0] = px[..., 1] = px[..., 2] = g
+    img.pixels[:] = px.ravel()
+    path = os.path.join(TEX_DIR, "interior", "ao.jpg")
+    img.filepath_raw = path
+    img.file_format = "JPEG"
+    img.save()
+    for o in obs:
+        o.data.uv_layers.active = o.data.uv_layers[0]
+    print(f"ao total {time.time() - t0:.0f} s -> {path}")
 
 
 def build():
@@ -915,13 +1255,18 @@ def build():
     build_tunnel()
     build_aft_compartment(uv)
     build_eyepoints()
+    apply_box_uvs()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--ao-res", type=int, default=2048, help="AO lightmap size (0 = no bake)")
+    ap.add_argument("--ao-samples", type=int, default=32)
     args = ap.parse_args()
     build()
+    if args.ao_res:
+        bake_ao(args.ao_res, args.ao_samples)
     tris = sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in bpy.data.objects if o.type == "MESH")
     print(f"objects={len(bpy.data.objects)} triangles={tris}")
     B.export(args.out)
