@@ -318,6 +318,19 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     aircraftRoot.add(l);
   }
 
+  // station lights: navigator's chart lamp, glow from scopes and equipment lamps (model coords)
+  {
+    const lamp = new THREE.SpotLight(0xffd9a0, 4, 3.2, 0.75, 0.6, 1.6);
+    lamp.position.set(-1.16, -0.43, -19.13);
+    lamp.target.position.set(-1.22, -0.8, -18.9);
+    aircraftRoot.add(lamp, lamp.target);
+    for (const [x, y, z, c, i] of [[0, -0.72, -20.4, 0x50ff80, 0.35], [-0.6, 0.85, -14.85, 0xffb060, 0.3], [0, 0.25, 14.1, 0x50ff80, 0.35], [0.9, -1.0, -18.9, 0xffb060, 0.25]] as const) {
+      const l = new THREE.PointLight(c, i, 1.6, 1.8);
+      l.position.set(x, y, z);
+      aircraftRoot.add(l);
+    }
+  }
+
   resetOnRunway();
   setupPointer(cockpit);
   const vis = defaultAircraftState();
@@ -345,7 +358,7 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       else if (it?.kind === "ladder") cr.useLadder(it.ladder);
       else if (it?.kind === "tunnel") cr.useTunnel(it.tunnel, it.end);
     }
-    if (pressed.has("Tab") && view === "inside") toggleStations();
+    if (pressed.has("Tab") && aboard()) toggleStations();
     // just sat down (E, click or walked there): look where the station works
     if (cr.mode === "seated" && cr.seat && cr.seat !== lastSeat) {
       const st = cr.seat.station;

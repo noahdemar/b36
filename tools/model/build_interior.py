@@ -18,6 +18,7 @@ Exported node conventions (read by web/src/cockpit.ts):
 import argparse
 import json
 import math
+import random
 import os
 import sys
 
@@ -255,6 +256,20 @@ def init_materials():
     M["lamp_red"] = mk("LampRed", (0.6, 0.05, 0.03), 0.0, 0.2)
     M["chrome"] = mk("Chrome", (0.8, 0.8, 0.8), 1.0, 0.2)
     M["placard"] = mk("Placard", (0.75, 0.72, 0.62), 0.0, 0.8)
+    M["meter"] = mk("MeterFace", (0.04, 0.04, 0.04), 0.0, 0.35)
+    M["cable"] = mk("Cable", (0.02, 0.02, 0.02), 0.0, 0.7)
+    M["cable_olive"] = mk("CableOlive", (0.09, 0.10, 0.05), 0.0, 0.75)
+    M["oxygen"] = mk("OxygenBottle", (0.55, 0.45, 0.06), 0.3, 0.45)   # yellow low-pressure oxygen cylinders
+    M["extinguisher"] = mk("Extinguisher", (0.45, 0.04, 0.03), 0.2, 0.35)
+    M["brass"] = mk("Brass", (0.6, 0.45, 0.2), 1.0, 0.35)
+    for key, name, rgb, strength in (("glow_amber", "GlowAmber", (1.0, 0.55, 0.12), 3.0), ("glow_green", "GlowGreen", (0.2, 1.0, 0.3), 2.5),
+                                     ("glow_red", "GlowRed", (1.0, 0.1, 0.05), 3.0), ("glow_white", "GlowWhite", (1.0, 0.86, 0.62), 6.0),
+                                     ("scope_glow", "ScopeGlow", (0.05, 0.35, 0.12), 0.6)):
+        m = mk(name, rgb, 0.0, 0.3)
+        bsdf = m.node_tree.nodes["Principled BSDF"]
+        bsdf.inputs["Emission Color"].default_value = (*rgb, 1.0)
+        bsdf.inputs["Emission Strength"].default_value = strength
+        M[key] = m
     os.makedirs(TEX_DIR, exist_ok=True)
     atlas_path = os.path.join(TEX_DIR, "dials.png")
     uv = dials.build_atlas(atlas_path)
@@ -902,6 +917,14 @@ def build_aft_compartment(uv):
     disc(mb, frame_from(W(0, d1 - 0.551, fz + 0.80), (1, 0, 0), (0, 0, 1)) @ Matrix.Rotation(math.pi / 2, 4, "X")
          @ Matrix.Rotation(math.pi, 4, "Y"), 0.14, 0.0, mat="radome", seg=32)
     obstacle("tail_console", -0.50, 0.50, d1 - 0.55, d1, fz, fz + 1.05)
+    rng = random.Random(41)
+    for sx in (-1, 1):  # APG-41 search / track controls and the gun-laying computer panel
+        equipment_face(mb, face_frame(W(sx * 0.335, d1 - 0.551, fz + 0.60), (0, 1, 0)), 0.29, 0.43, rng, units=[0.2, 0.21])
+    disc(mb, frame_from(W(0, d1 - 0.553, fz + 0.80), (1, 0, 0), (0, 0, 1)) @ Matrix.Rotation(math.pi / 2, 4, "X")
+         @ Matrix.Rotation(math.pi, 4, "Y"), 0.12, 0.0, mat="scope_glow", seg=32)
+    for sx in (-1, 1):
+        cyl(mb, W(sx * 0.92, d1 - 0.16, fz + 0.02), 0.1, 0.55, "oxygen")
+        obstacle(f"oxygen_aft_{'L' if sx < 0 else 'R'}", sx * 0.92 - 0.11, sx * 0.92 + 0.11, d1 - 0.28, d1, fz, fz + 0.6)
     to_object("Int_AftCompartment", mb)
     build_seat("Seat_TAIL", "tail_gunner", 0.0, d1 - 1.05, math.pi, floor=fz, eye_up=1.15, stand=(0.0, d1 - 1.75))
     SEATS[-1]["sight"] = {"eye": [0.0, B.fus_center_z(48.3) - 0.15, 48.3 + 0.2 - P.NOSE_Y], "turrets": ["Turret_Tail"],
@@ -945,6 +968,18 @@ def build_lower_deck():
     mb.loft(hood, closed=False, mat="panel")
     wbox(mb, -0.50, 0.50, 4.10, 4.35, lf + 0.62, lf + 0.66, "panel")   # desk lip
     obstacle("radar_console", -0.55, 0.55, 3.55, 4.35, lf, lf + 1.05)
+    rng = random.Random(23)
+    for sx in (-1, 1):  # range, gain, tilt and bombing computer controls either side of the scope
+        equipment_face(mb, face_frame(W(sx * 0.375, 4.10, lf + 0.67), (0, -1, 0)), 0.30, 0.37, rng, units=[0.17, 0.18])
+    # bombing control box on the desk: arming switches under guards and the release handle
+    bf = face_frame(W(0.32, 4.28, lf + 0.66), (0, 0, 1), up=(0, -1, 0))
+    box(mb, bf, -0.12, 0.12, -0.08, 0.08, 0, 0.05, "equip")
+    tf = bf @ Matrix.Translation((0, 0, 0.05))
+    for k in range(4):
+        toggle(mb, tf, -0.08 + 0.05 * k, -0.02, mat="chrome")
+        box(mb, tf, -0.095 + 0.05 * k, -0.065 + 0.05 * k, -0.045, 0.01, 0, 0.003, "knob_red")  # guard plates
+    lamp(mb, tf, 0.09, 0.04, "glow_amber")
+    lamp(mb, tf, 0.09, -0.04, "glow_green")
     # Navigator's table on the left wall
     wbox(mb, -1.45, -1.00, 5.30, 6.70, lf + 0.70, lf + 0.75, "floor")
     wbox(mb, -1.45, -1.40, 5.30, 6.70, lf, lf + 0.70, "panel")
@@ -952,7 +987,28 @@ def build_lower_deck():
     obstacle("nav_table", -1.6, -1.00, 5.30, 6.70, lf, lf + 0.75)
     # K-system equipment rack on the right
     wbox(mb, 1.00, 1.45, 5.0, 6.4, lf, lf + 1.40, "panel")
+    equipment_face(mb, face_frame(W(1.00, 5.7, lf + 0.06), (-1, 0, 0)), 1.36, 1.30, random.Random(31))
     obstacle("k_rack", 1.00, 1.6, 5.0, 6.4, lf, lf + 1.40)
+    # navigator's instrument panel above the table (airspeed, altimeter, compass repeater, clock, drift)
+    nf = face_frame(W(-1.42, 6.0, lf + 0.86), (1, 0, 0))
+    box(mb, nf, -0.5, 0.5, 0, 0.42, -0.03, 0.0, "panel")
+    for k, (u, v, r) in enumerate([(-0.36, 0.28, 0.05), (-0.2, 0.28, 0.05), (-0.04, 0.27, 0.06), (0.14, 0.28, 0.05), (0.32, 0.27, 0.06),
+                                   (-0.36, 0.12, 0.04), (-0.2, 0.12, 0.04), (0.32, 0.11, 0.045)]):
+        meter(mb, nf, u, v, r, random.Random(50 + k))
+    for k in range(3):
+        knob(mb, nf @ Matrix.Translation((0, 0, 0.0)), -0.02 + 0.08 * k, 0.1, 0.012, 0.015)
+    # gooseneck chart lamp
+    base = W(-1.38, 5.45, lf + 0.755)
+    tube(mb, base, base + Vector((0.05, 0, 0.35)), 0.007, seg=6, mat="cable")
+    tube(mb, base + Vector((0.05, 0, 0.35)), base + Vector((0.22, -0.12, 0.42)), 0.007, seg=6, mat="cable")
+    sh = frame_from(base + Vector((0.22, -0.12, 0.42)), (1, 0, 0), (0, 1, 0)) @ Matrix.Rotation(math.pi, 4, "X")
+    shade = [[sh @ Vector((rr * math.cos(2 * math.pi * k / 16), rr * math.sin(2 * math.pi * k / 16), zz)) for k in range(17)] for rr, zz in ((0.015, 0), (0.05, 0.06))]
+    mb.loft(shade, closed=False, mat="equip")
+    disc(mb, sh @ Matrix.Translation((0, 0, 0.035)), 0.025, 0.0, mat="glow_white", seg=12)
+    # oxygen cylinders at the aft end of the lower deck
+    for sx in (-1, 1):
+        cyl(mb, W(sx * 0.95, 12.05, lf + 0.02), 0.11, 0.58, "oxygen")
+        obstacle(f"oxygen_lower_{'L' if sx < 0 else 'R'}", sx * 0.95 - 0.12, sx * 0.95 + 0.12, 11.93, 12.17, lf, lf + 0.6)
     to_object("Int_LowerDeck", mb)
     build_seat("Seat_RADAR", "radar_observer", 0.0, 4.80, 0.0, floor=lf, eye_up=1.20)
     SEATS[-1]["sight"] = {"eye": [0.0, B.fus_center_z(0.9) - 0.15, 0.6 - P.NOSE_Y], "turrets": ["Turret_Nose"], "nose": True}
@@ -1058,13 +1114,144 @@ def build_engineer(uv):
     build_seat("Seat_FE", "flight_engineer", 0.70, 6.45, math.pi, eye_up=1.25, stand=(0.70, 5.55))
 
 
+# ------------------------------------------------------------------ equipment detail (representative)
+
+def face_frame(origin, normal, up=(0, 0, 1)):
+    """Frame on an equipment face: X across, Y up the face, Z out of it."""
+    n = Vector(normal).normalized()
+    x = Vector(up).cross(n).normalized()
+    return frame_from(origin, x, Vector(up))
+
+
+def lamp(mb, f, u, v, mat, r=0.008):
+    annulus(mb, f, r, r + 0.005, 0.004, "chrome", seg=12)
+    local_tube(mb, f, (u, v, 0), (u, v, 0.004), r + 0.005, "chrome", seg=12)
+    disc(mb, f @ Matrix.Translation((u, v, 0.006)), r, 0.0, mat=mat, seg=12)
+
+
+def meter(mb, f, u, v, r, rng):
+    """Round meter: bezel, black face with a scale arc and a needle."""
+    g = f @ Matrix.Translation((u, v, 0))
+    local_tube(mb, g, (0, 0, 0), (0, 0, 0.012), r + 0.006, "equip", seg=20)
+    disc(mb, g @ Matrix.Translation((0, 0, 0.012)), r, 0.0, mat="meter", seg=20)
+    annulus(mb, g, r * 0.78, r * 0.84, 0.0125, "needle", seg=20)
+    a = math.radians(rng.uniform(-60, 60))
+    box(mb, g @ Matrix.Translation((0, 0, 0.013)) @ Matrix.Rotation(a, 4, "Z"), -0.001, 0.001, 0, r * 0.8, 0, 0.001, "needle_orange")
+
+
+def equipment_face(mb, f, w, h, rng, units=None):
+    """Stack of radio / radar units on a face (frame origin at the bottom centre): front plates with
+    handles and screws, meters, knobs, toggles, indicator lamps, jacks and placards."""
+    heights = units or []
+    if not heights:
+        y = 0.0
+        while y < h - 0.11:
+            uh = min(h - y, rng.choice([0.13, 0.17, 0.21, 0.26]))
+            heights.append(uh)
+            y += uh + 0.008
+    y = 0.0
+    for uh in heights:
+        if y + uh > h + 1e-6:
+            break
+        g = f @ Matrix.Translation((0, y, 0))
+        hw = w / 2 - 0.006
+        box(mb, g, -hw, hw, 0.004, uh - 0.004, 0, 0.006, rng.choice(["equip", "panel", "equip"]))
+        gz = g @ Matrix.Translation((0, 0, 0.006))
+        for sx in (-1, 1):  # screws, and handles on wider units
+            for sy in (0.014, uh - 0.014):
+                disc(mb, gz @ Matrix.Translation((sx * (hw - 0.012), sy, 0.0005)), 0.004, 0.0, mat="chrome", seg=6)
+            if w > 0.5 and uh > 0.12:
+                hx = sx * (hw - 0.03)
+                local_tube(mb, gz, (hx, uh * 0.3, 0), (hx, uh * 0.3, 0.025), 0.004, "chrome", seg=6)
+                local_tube(mb, gz, (hx, uh * 0.7, 0), (hx, uh * 0.7, 0.025), 0.004, "chrome", seg=6)
+                local_tube(mb, gz, (hx, uh * 0.3, 0.025), (hx, uh * 0.7, 0.025), 0.004, "chrome", seg=6)
+        x = -hw + (0.06 if w > 0.5 else 0.025)
+        x_end = hw - (0.06 if w > 0.5 else 0.025)
+        while x < x_end - 0.03:
+            kind = rng.choices(["meter", "knobs", "toggles", "lamps", "placard", "jacks"], [3, 4, 3, 2, 2, 1])[0]
+            cy = uh / 2
+            if kind == "meter" and uh >= 0.12:
+                r = min(0.045, uh * 0.32, (x_end - x) / 2)
+                meter(mb, gz, x + r, cy + 0.008, r, rng)
+                x += 2 * r + 0.025
+            elif kind == "knobs":
+                n = rng.randint(1, 3)
+                for k in range(n):
+                    rr = rng.choice([0.011, 0.014, 0.018])
+                    knob(mb, gz, x + rr + k * 0.05, cy - 0.01 + (0.03 if k % 2 else 0) * (uh > 0.15), rr, 0.016,
+                         mat="knob_red" if rng.random() < 0.08 else "knob")
+                x += n * 0.05 + 0.015
+            elif kind == "toggles":
+                n = rng.randint(2, 4)
+                for k in range(n):
+                    toggle(mb, gz, x + 0.012 + k * 0.03, cy - 0.015)
+                    box(mb, gz, x + k * 0.03, x + 0.024 + k * 0.03, cy + 0.012, cy + 0.022, 0, 0.0006, "placard")
+                x += n * 0.03 + 0.02
+            elif kind == "lamps":
+                n = rng.randint(1, 3)
+                for k in range(n):
+                    lamp(mb, gz, x + 0.012 + k * 0.03, cy + 0.02, rng.choice(["glow_amber", "glow_green", "glow_green", "glow_red", "lamp_red"]))
+                x += n * 0.03 + 0.02
+            elif kind == "placard":
+                pw = min(0.09, x_end - x)
+                box(mb, gz, x, x + pw, cy - 0.012, cy + 0.012, 0, 0.0008, "placard")
+                x += pw + 0.02
+            else:
+                for k in range(2):
+                    local_tube(mb, gz, (x + 0.01 + k * 0.03, cy, 0), (x + 0.01 + k * 0.03, cy, 0.01), 0.007, "chrome", seg=8)
+                    disc(mb, gz @ Matrix.Translation((x + 0.01 + k * 0.03, cy, 0.0101)), 0.004, 0.0, mat="knob", seg=8)
+                x += 0.07
+        y += uh + 0.008
+
+
+def cyl(mb, base, r, h, mat):
+    """Upright cylinder with a domed top (gas bottles, extinguishers)."""
+    tube(mb, base, base + Vector((0, 0, h)), r, seg=16, mat=mat)
+    disc(mb, frame_from(base + Vector((0, 0, h)), (1, 0, 0), (0, 1, 0)), r, 0.0, mat=mat, seg=16)
+    tube(mb, base + Vector((0, 0, h)), base + Vector((0, 0, h + 0.06)), r * 0.25, seg=8, mat="brass")
+
+
+def cable_run(mb, d0, d1, theta, inset=0.09, n=3, seed=0):
+    """Bundle of wires and lines along the hull at angle theta from the top, with clamps."""
+    rng = random.Random(seed)
+    k = max(2, int((d1 - d0) / 0.25))
+    for i in range(n):
+        th = theta + (i - (n - 1) / 2) * math.radians(1.1) * (1 if theta > 0 else -1)
+        r = rng.choice([0.006, 0.008, 0.011, 0.014])
+        mat = rng.choice(["cable", "cable", "cable_olive", "seatframe"])
+        pts = [B.hull_point(d0 + (d1 - d0) * j / k, th, inset=inset + 0.012 * i) for j in range(k + 1)]
+        for a, b in zip(pts, pts[1:]):
+            tube(mb, a, b, r, seg=6, mat=mat)
+    for j in range(int((d1 - d0) / 0.45) + 1):
+        d = d0 + j * 0.45
+        p = B.hull_point(d, theta, inset=inset)
+        o = B.hull_point(d, theta, inset=0.0)
+        nrm = (o - p).normalized()
+        cf = face_frame(p, -nrm, up=(0, 1, 0))
+        box(mb, cf, -0.03, 0.03, -0.008, 0.008, -0.03, 0.02, "seatframe")
+
+
+def build_detail_clutter():
+    """Cable runs along the cabin walls, fire extinguisher, oxygen cylinders (aft compartment rear)."""
+    mb = MeshBuilder()
+    for th in (75, -75):
+        cable_run(mb, 7.7, DECK_END_D - 0.06, math.radians(th), seed=th)
+    for th in (118, -118):
+        cable_run(mb, 4.4, DECK_END_D - 0.06, math.radians(th), seed=th + 1)
+    a0, a1 = P.AFT_COMP_D
+    for th in (40, -40):
+        cable_run(mb, a0 + 0.08, a1 - 0.06, math.radians(th), seed=th + 2)
+    # hand fire extinguisher on the flight deck's aft bulkhead, right side
+    cyl(mb, W(1.0, DECK_END_D - 0.09, FLOOR_Z + 0.42), 0.065, 0.36, "extinguisher")
+    obstacle("extinguisher", 0.92, 1.08, DECK_END_D - 0.17, DECK_END_D, FLOOR_Z + 0.4, FLOOR_Z + 0.85)
+    to_object("Int_Detail", mb)
+
+
 def build_radio_rack():
     mb = MeshBuilder()
     wbox(mb, -1.45, -0.80, 9.3, 10.4, FLOOR_Z, 1.35, "panel")
-    for k in range(4):
-        for j in range(3):
-            disc(mb, frame_from(W(-0.80 + 0.001, 9.5 + 0.28 * k, 0.6 + 0.25 * j), (0, -1, 0), (0, 0, 1)),
-                 0.03, 0.0, mat="knob", seg=12)
+    # command and liaison sets, interphone and IFF units stacked in the rack (representative)
+    equipment_face(mb, face_frame(W(-0.80, 9.85, FLOOR_Z + 0.06), (1, 0, 0)), 1.06, 1.24, random.Random(11))
     to_object("Int_RadioRack", mb)
     obstacle("radio_rack", -1.6, -0.80, 9.3, 10.4, FLOOR_Z, 1.35)
     build_seat("Seat_RO", "radio_operator", -0.30, 9.85, math.pi / 2, eye_up=1.25, stand=(0.25, 9.85))
@@ -1257,6 +1444,7 @@ def build():
     build_lower_deck()
     build_tunnel()
     build_aft_compartment(uv)
+    build_detail_clutter()
     build_eyepoints()
     apply_box_uvs()
 

@@ -160,9 +160,9 @@ def build_all(out_dir):
         # instrument panel, glareshield, canopy frames: kept clean, fine scratches only
         "paint_panel": worn_paint(out_dir, "paint_panel", (0.020, 0.020, 0.022), 0.012, 0.6, 0.00004),
         # black equipment and pedestal: heavy edge wear (photo 005)
-        "paint_black": worn_paint(out_dir, "paint_black", (0.022, 0.022, 0.024), 0.10, 0.55, 0.00004),
+        "paint_black": worn_paint(out_dir, "paint_black", (0.022, 0.022, 0.024), 0.04, 0.55, 0.00004),
         # consoles and lower walls: grey-green, light wear
-        "paint_green": worn_paint(out_dir, "paint_green", (0.055, 0.090, 0.080), 0.05, 0.62, 0.00001),
+        "paint_green": worn_paint(out_dir, "paint_green", (0.055, 0.090, 0.080), 0.015, 0.62, 0.00001),
         # structure and seat frames (darker, satin)
         "metal_dark": worn_paint(out_dir, "metal_dark", (0.030, 0.036, 0.033), 0.14, 0.45, 0.00001),
         "canvas": canvas(out_dir),  # olive drab cushions

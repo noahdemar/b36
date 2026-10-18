@@ -217,27 +217,59 @@ carries the inner hull profile; Crew.clampToHull keeps the walking / climbing ey
 skin (crew_test checks seat eyes and random walks). Tunnel hatches are real openings with open doors,
 clickable (extras.tunnel), E range 1.3 m, and a "hatch ahead" hint within 4 m.
 
-## Next session (handoff, 2026-10-18)
+## Tunnel, turret clipping, gunnery and fighters (2026-10-18, session 2)
 
-Open issues reported by the user after version 4 of the hosted page:
-1. Tunnel still unusable in play ("can't seem to get into the tunnel and use it"). Headless crew_test
-   and a scripted browser click at the hatch both enter tunnel mode, so the failure is in real play:
-   reproduce with real keyboard walking from the flight deck (W/A/S/D + E, and a mouse click on the
-   hatch) in the hosted build (web/artifact/out), then check: hatch prompt range vs. where the player
-   actually stops (GUF seats and the radio rack crowd the route), whether E is consumed elsewhere,
-   trolley movement with W/S once inside, and the exit at the aft end. Add a crew_test route that walks
-   from Seat_AC to the aft compartment using only player-style input (no teleports).
-2. Turret objects clip into the tunnel and the cockpit. Upper forward turrets (TURRET_D upper_fwd
-   10.6) sit inside the forward compartment; stowed turrets are lowered 0.95 m (extras retract) into
-   the fuselage, and the upper aft / lower aft wells overlap the tunnel (x -0.6, z 1.25, d 12.4-34.6)
-   and aft compartment. Fix: interior bays / doors that enclose each turret well, stow depth limited
-   to the well, and hide or clip turret geometry that would show inside crew spaces (check with the
-   hull guard and renders from inside every compartment).
-3. Make the gunner positions more realistic and intense: proper sighting stations (B-36H remote
-   sights in the blisters, reflector sight reticle with lead computing, range input), turret slew
-   sounds/visual feedback, ammunition counters and feed, gun smoke and recoil, spent cases, sight
-   vibration, tracer visibility; give the gunners targets (user earlier deferred enemy fighters, so
-   confirm before adding them; otherwise ground strafing targets and towed sleeve targets).
+Root causes found and fixed:
+- Tunnel: entering at the forward hatch put the crew member at s = 0 on the tunnel path, and the next
+  frame treated that as "pulled out of the forward end" unless W was already held, so E bounced the
+  player straight back out. Now the crew member leaves only by pulling outward past an end.
+  The walkway past the engineer's panel was a 10 cm slalom (panel moved inboard edge 0.05 -> 0.20 m,
+  crew radius 0.24 -> 0.20 m). crew_test has a player-style route (limited turn rate, aim noise,
+  sloppy waypoints, E, W through the tunnel) and auto-walk to every seat.
+- Click-to-walk: clicking a seat, ladder or hatch from up to 12 m walks there (A* on a 5 cm grid per
+  deck, then line-of-sight shortcuts); Tab lists all stations and walks there through ladder/tunnel.
+- Turret clipping: retractable turrets are clipped by a plane 0.09 m below the extended ring (inside
+  the outer skin, outside the cabin lining), so moving or extended turrets never show inside.
+  The vertical fin root (FIN_ROOT_Z 1.2) hung up to 0.6 m into the aft compartment ceiling; fin
+  vertices inside the fuselage are now raised to 2 cm under the skin (build_b36.seat_on_hull).
+
+Gunnery (user decision: enemy fighters, no lead marker in third person):
+- MiG-15bis (SOURCED: span 10.08 m, 1,076 km/h SL, 990 km/h at 10 km, N-37D 40 rds 400/min,
+  2 x NR-23 80 rds each). Attack geometry, g, aim error, damage per hit ESTIMATED. Passes from
+  set-up points at clock positions, lead pursuit, break, extend, repeat; damaged fighters may leave.
+- AI gunners on every turret the player does not man (aim error 20 mil wandering, 20% ranging
+  error, 2.5 s reaction, bursts). Measured (fighters_test, 4 MiGs, 3 min, 32,000 ft, 6 seeds):
+  undefended 70 passes, bomber lost 2/6; with AI gunners 0/6 lost, 11/24 fighters downed.
+- Computing sight: tracking rate + range rate (inertial frame) -> lead solution (drag, drop, trail;
+  ballistics.ts, gunnery_test misses < 1 m). Ranging ring of diamonds for a MiG's span (wheel),
+  tail station radar lock, G range assist (game aid). Crossing fighter at 500 m, perfect tracking:
+  75 hits / 190 rounds with correct range, 2 with a fixed 600 m setting, 0 aiming straight at it.
+- Bug fixed: rounds were stepped once on the frame they were fired, running 1/60 s ahead of the
+  target (about 4 m at 250 m/s closure); hit rates were 4x too low.
+- Barrel heat, stoppages and charging, per-gun ammunition, slewing/limit/interrupter status,
+  muzzle flash, smoke, cases, recoil, sight vibration, procedural sound (audio.ts).
+
+Third person (user decision: mouse aim for the pilot):
+- C at a pilot seat: chase camera; the mouse sets an aim direction, sim/instructor.ts flies there
+  (bank 30 deg, flight path -12..+10 deg, 1.7 g protection, takeoff rotation). instructor_test:
+  turns, climbs, dives, pull-out 0.87-1.60 g, takeoff, no damage. W/S/A/D override, M toggles.
+- C at a gun station: camera behind/above the aircraft along the gunner's line of sight; the sight
+  line is laid through the crosshair point at the set range.
+
+World (user priorities: sky and clouds, terrain, station interiors):
+- terrain.ts: quadtree chunks (32x32, leaf 1.6 km, root 410 km), flat plain within 24 km of the
+  runway-range line (bombs, rounds and flak use y = 0), hills to 520 m, mountains to 3.6 km beyond
+  55-95 km; flying into terrain is a crash. Shader land use: field patchwork per 7 km region,
+  hedgerows, forest, rivers, lakes, towns, rock, snow.
+- clouds.ts: cumulus from camera-facing puffs with flat bases, lit tops, sun rim; cirrus at 9.8 km.
+- Contrails from the six pistons, four jets and fighters below 235 K (ISA ~8,200 m, ESTIMATED).
+- Time of day (Shift+T): sun for 35 N, +20 deg declination; sky, fog, light colours, env map.
+- Interiors: equipment units (meters, knobs, toggles, lamps, handles) on the radio rack, K-system
+  rack, radar and tail consoles; bombing switch box; navigator's instrument panel and chart lamp;
+  cable runs; oxygen cylinders; extinguisher; station lights. Paint chip wear reduced.
+
+Open: fighter visuals are low poly; no cloud shadows on terrain; sound is synthesized (no samples);
+radio operator station not functional.
 
 ## Phases
 
