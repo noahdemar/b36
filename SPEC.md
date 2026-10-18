@@ -51,6 +51,37 @@ Verified by tools/model/compare_blueprint.py overlays.
 Still estimated: gear geometry, turret positions, bomb bay stations, control surface spans,
 jet pod length and drop.
 
+## Interior: flight deck (phase 3, started 2026-10-18)
+
+Decisions (confirmed): pilot station first; cockpit + flyable; clickable 3D cockpit with keyboard
+shortcuts; keyboard + mouse input; layout reference-matched.
+
+References: reference/cockpit/ (USAF walkaround photos via cybermodeler.com, NMUSAF flight deck
+photo, B-36 flight manual Fig 1-3 "Forward Cabin Arrangement").
+
+Layout (manual Fig 1-3 + photos):
+- Raised flight deck under the canopy. Left seat = Aircraft Commander (first playable seat),
+  right seat = Pilot. Flight engineer behind the right seat at a large panel. Lower deck
+  ahead/below: navigator, radar observer, nose sight; radio operator aft.
+- Main panel under a padded arc glareshield. Left: AC flight instruments (ASI, attitude, RMI,
+  altimeter, VSI, turn & slip, radio altimeter, manifold pressure, RPM, clock). Center: 4x4 J47
+  gauges (RPM %, EGT, fuel press, oil press) under six reversed-prop lights. Right: pilot
+  flight instruments.
+- Pedestal: 6 piston throttles T1-T6, gear switch, flap switch, nose wheel steering switch,
+  parking brake, trim. Overhead: jet engine control panel with 4 jet throttles.
+- Yokes: ram's-horn on floor columns. Nose wheel steering tiller on left console.
+- Colors: black panels and frames, interior green structure, green seat cushions.
+
+Implementation:
+- tools/model/build_interior.py -> web/public/models/b36_interior.glb, same coordinates as
+  exterior. Canopy is integrated into the fuselage loft (hump + glazed faces + frames) so the
+  inside and outside glazing match.
+- Instruments: bezel + dial face (PIL-generated texture atlas) + named needle nodes;
+  extras give instrument id and needle index. Mapping value -> angle lives in the client.
+- Controls: named nodes with extras {control, axis, min, max}; client raycasts and drags.
+- Flight model in the client: 6DOF rigid body, aero coefficients derived from published
+  performance (each tagged in code as DERIVED/ESTIMATED), validated by scripted tests.
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part
