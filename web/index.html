@@ -14,13 +14,21 @@
       #label:empty { display: none; }
       #yoke { position: fixed; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid #ffd27a; border-radius: 50%; pointer-events: none; display: none; }
       #loading { position: fixed; inset: 0; display: grid; place-items: center; color: #fff; font-size: 15px; pointer-events: none; }
-    </style>
+      #sight { position: fixed; inset: 0; pointer-events: none; display: none; z-index: 1; }
+  #sight .h, #sight .v { position: absolute; background: rgba(255, 210, 120, 0.85); }
+  #sight .h { left: 30%; right: 30%; top: 50%; height: 1px; }
+  #sight .v { top: 25%; bottom: 25%; left: 50%; width: 1px; }
+  #sight .ring { position: absolute; left: 50%; top: 50%; width: 60px; height: 60px; margin: -31px 0 0 -31px; border: 1px solid rgba(255, 210, 120, 0.85); border-radius: 50%; }
+  #impact { position: fixed; left: 50%; top: calc(50% + 60px); transform: translateX(-50%); color: #ffd27a; font: 12px ui-monospace, monospace; display: none; pointer-events: none; text-shadow: 0 1px 2px #000; }
+</style>
   </head>
   <body>
     <div id="hud"></div>
     <div id="help"></div>
     <div id="label"></div>
     <div id="yoke"></div>
+<div id="sight"><div class="h"></div><div class="v"></div><div class="ring"></div></div>
+<div id="impact"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

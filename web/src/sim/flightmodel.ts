@@ -101,6 +101,12 @@ export class FlightModel {
     this.updateReadout(0);
   }
 
+  /** Change aircraft mass (stores released, fuel burned); inertia scales with mass. */
+  setMass(m: number) {
+    this.inertia.multiplyScalar(m / this.mass);
+    this.mass = m;
+  }
+
   /** Model-origin offset from CG in body coords (render the model at pos + quat * modelOffset). */
   get modelOffset(): Vector3 {
     return this.cg.clone().negate();
@@ -114,6 +120,7 @@ export class FlightModel {
     this.omega.set(0, 0, 0);
     this.gearPos = 1;
     this.controls.gearDown = true;
+    if (this.readout) this.updateReadout(0);
   }
 
   /** Level-flight trim (clean): angle of attack and elevator trim setting for weight at speed. */
@@ -140,6 +147,7 @@ export class FlightModel {
     this.controls.parkingBrake = false;
     this.controls.trim = t.trim;
     this.controls.elevator = (t.elevRad - t.trim * this.p.trimMax) / this.p.elevatorMax;
+    this.updateReadout(0);
     return t;
   }
 

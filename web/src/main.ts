@@ -4,7 +4,10 @@ import { Aircraft, defaultAircraftState, loadGltf } from "./aircraft";
 import { Cockpit, type Pickable } from "./cockpit";
 import { Crew, type NavData } from "./crew";
 import { KEY_HELP, KeyboardInput } from "./input";
+import { BombingRange, RANGE_CENTER } from "./range";
+import { Autopilot } from "./sim/autopilot";
 import { FlightModel } from "./sim/flightmodel";
+import { BombSystem } from "./weapons/bombs";
 import { World } from "./world";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
@@ -24,9 +27,22 @@ const hud = document.getElementById("hud")!;
 const help = document.getElementById("help")!;
 const label = document.getElementById("label")!;
 const yokeDot = document.getElementById("yoke")!;
+const sightEl = document.getElementById("sight")!;
+const impactEl = document.getElementById("impact")!;
 help.innerHTML = "<b>B-36 flight deck</b><table>" + KEY_HELP.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("") + "</table>";
 
 const fm = new FlightModel();
+const MASS0 = fm.mass;
+const ap = new Autopilot();
+let bombs: BombSystem | null = null;
+let range: BombingRange | null = null;
+let sightView = false;
+let crewMsg = "";
+let crewMsgT = 0;
+function say(msg: string) {
+  crewMsg = msg;
+  crewMsgT = 4;
+}
 const debugHook = { fm } as Record<string, unknown>;
 (window as unknown as { b36: unknown }).b36 = debugHook; // debug/test hook
 const input = new KeyboardInput();
@@ -40,6 +56,7 @@ let crew: Crew | null = null;
 debugHook.camera = camera;
 debugHook.scene = scene;
 const eyeLocal = new THREE.Vector3();
+const FUNCTIONAL = new Set(["radar_observer"]);
 const STATION_NAMES: Record<string, string> = {
   aircraft_commander: "Aircraft commander", pilot: "Pilot", flight_engineer: "Flight engineer",
   radio_operator: "Radio operator", radar_observer: "Radar observer", navigator: "Navigator",
@@ -49,6 +66,9 @@ let showHud = true;
 let extFrames: THREE.Object3D | null = null;
 
 function resetOnRunway() {
+  ap.disengage();
+  bombs?.reload();
+  fm.setMass(MASS0);
   fm.placeOnGround(new THREE.Vector3(0, 0, 0), 0);
   const c = fm.controls;
   c.throttle.fill(0);
@@ -77,6 +97,24 @@ function setView(v: View) {
   camera.updateProjectionMatrix();
 }
 
+/** Airborne on the bombing run: 15 km south of the range, 12,000 ft, heading north, autopilot on. */
+function startBombRun() {
+  bombs?.reload();
+  fm.setMass(MASS0);
+  fm.placeInFlight(12_000 * 0.3048, 105, 0);
+  fm.pos.set(RANGE_CENTER.x + 40, fm.pos.y, RANGE_CENTER.z + 15_000);
+  fm.controls.throttle.fill(0.7);
+  fm.controls.jetThrottle.fill(0);
+  fm.controls.flaps = 0;
+  fm.flapPos = 0;
+  ap.engage(fm);
+  say("BOMB RUN: autopilot on, 15 km to the target. Go to the radar observer's seat on the lower deck.");
+}
+
+function atStation(station: string) {
+  return view === "inside" && crew?.mode === "seated" && crew.seat?.station === station;
+}
+
 /** Flight inputs reach the sim only from a pilot seat. */
 function flying() {
   return view === "inside" && crew?.mode === "seated" && !!crew.seat?.flies;
@@ -87,6 +125,10 @@ const MODELS = (window as unknown as { B36_MODELS?: { exterior: string; interior
   ?? { exterior: "models/b36.gltf", interior: "models/b36_interior.glb" };
 const navReq = fetch("models/b36_nav.json").then((r) => r.json() as Promise<NavData>);
 Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then(([ext, int, nav]) => {
+  bombs = new BombSystem(aircraftRoot, world.group);
+  range = new BombingRange(world.group);
+  bombs.onImpact = (i) => range!.impact(i.pos);
+  Object.assign(debugHook, { bombs, range, ap, aircraftRoot, world });
   crew = new Crew(nav);
   crew.sit("Seat_AC");
   debugHook.crew = crew;
@@ -134,6 +176,39 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       else if (it?.kind === "ladder") cr.useLadder(it.ladder);
     }
     if (pressed.has("KeyR")) resetOnRunway();
+    if (pressed.has("KeyN")) startBombRun();
+    // autopilot: Z from the pilot seats or the bombardier; yoke input disengages it
+    if (pressed.has("KeyZ") && (flying() || atStation("radar_observer"))) {
+      if (ap.engaged) ap.disengage();
+      else ap.engage(fm);
+      say(ap.engaged ? `AUTOPILOT ON: ${ap.altitudeFt.toFixed(0)} ft, heading ${ap.headingDeg.toFixed(0)}` : "AUTOPILOT OFF");
+    }
+    if (ap.engaged && flying() && ["KeyW", "KeyS", "KeyA", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].some((k) => pressed.has(k))) {
+      ap.disengage();
+      say("AUTOPILOT OFF (yoke input)");
+    }
+    // bombardier / bomb controls (doors also from the pilot seats)
+    const bombardier = atStation("radar_observer");
+    if (pressed.has("KeyO") && (bombardier || flying())) {
+      fm.controls.bombDoors = fm.controls.bombDoors > 0.5 ? 0 : 1;
+      say(fm.controls.bombDoors ? "BOMB DOORS OPENING" : "BOMB DOORS CLOSING");
+    }
+    if (bombardier && bombs) {
+      if (pressed.has("KeyK")) { bombs.armed = !bombs.armed; say(bombs.armed ? "BOMBS ARMED" : "BOMBS SAFE"); }
+      if (pressed.has("KeyM")) {
+        bombs.mode = bombs.mode === "single" ? "train" : bombs.mode === "train" ? "salvo" : "single";
+        say(`RELEASE MODE: ${bombs.mode.toUpperCase()}`);
+      }
+      if (pressed.has("KeyV")) sightView = !sightView;
+      if (pressed.has("Space")) {
+        aircraftRoot.updateMatrixWorld(true);
+        say(bombs.release(fm, aircraftRoot.matrixWorld));
+      }
+      if (ap.engaged) {
+        const k = (input.isDown("KeyD") ? 1 : 0) - (input.isDown("KeyA") ? 1 : 0);
+        if (k) ap.turn(k * 2 * dt); // 2 deg/s course correction through the autopilot
+      }
+    } else sightView = false;
     if (pressed.has("KeyH")) {
       showHud = !showHud;
       help.style.display = showHud ? "block" : "none";
@@ -152,9 +227,14 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     if (extFrames) extFrames.visible = view !== "inside";
     acc += dt;
     while (acc >= STEP) {
+      ap.update(fm, STEP);
       fm.step(STEP, 2);
       acc -= STEP;
     }
+    aircraftRoot.updateMatrixWorld(true);
+    bombs?.update(fm, aircraftRoot.matrixWorld, dt);
+    range?.update(dt);
+    crewMsgT -= dt;
 
     // Aircraft pose with floating origin: CG stays at x = z = 0.
     const off = fm.modelOffset.applyQuaternion(fm.quat);
@@ -175,7 +255,34 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     aircraft.apply(vis, dt);
     cockpit.update(fm, dt);
 
-    if (view === "inside") {
+    if (view === "inside" && sightView && bombs) {
+      // gyro-stabilised bombsight: looks from the nose at the predicted impact point
+      aircraftRoot.updateMatrixWorld(true);
+      const sightPos = new THREE.Vector3(0, -1.0, 1.4 - 24.7).applyMatrix4(aircraftRoot.matrixWorld);
+      const abs = sightPos.clone();
+      abs.x += fm.pos.x;
+      abs.z += fm.pos.z;
+      const pred = BombSystem.predict(fm, bombs.nextReleasePoint(fm, aircraftRoot.matrixWorld) ?? abs);
+      const target = pred.point.clone();
+      target.x -= fm.pos.x;
+      target.z -= fm.pos.z;
+      camera.position.copy(sightPos);
+      camera.up.set(0, 1, 0);
+      const fwd = fm.vel.clone().setY(0).normalize();
+      camera.up.copy(fwd);
+      camera.lookAt(target);
+      camera.fov = 9;
+      camera.updateProjectionMatrix();
+      let nd = Infinity;
+      let nt = "";
+      for (const t of range!.targets) {
+        if (t.destroyed) continue;
+        const d = Math.hypot(t.pos.x - pred.point.x, t.pos.z - pred.point.z);
+        if (d < nd) { nd = d; nt = t.name; }
+      }
+      impactEl.textContent = `TIME OF FALL ${pred.time.toFixed(1)} s   NEAREST TARGET ${nt} ${nd < 10_000 ? nd.toFixed(0) + " m" : "-"}`;
+    } else if (view === "inside") {
+      if (camera.fov !== head.fov) { camera.fov = head.fov; camera.updateProjectionMatrix(); camera.up.set(0, 1, 0); }
       aircraftRoot.updateMatrixWorld(true);
       const ang = cr.eye(eyeLocal);
       camera.position.copy(eyeLocal).applyMatrix4(aircraftRoot.matrixWorld);
@@ -194,11 +301,23 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
         `IAS ${r.ias_mph.toFixed(0)} mph   ALT ${r.alt_ft.toFixed(0)} ft   VS ${r.vs_fpm.toFixed(0)} fpm   HDG ${r.heading_deg.toFixed(0)}\n` +
         `PISTON ${(c.throttle[0] * 100).toFixed(0)}%   JETS ${c.jetThrottle[0] > 0 ? (c.jetThrottle[0] * 100).toFixed(0) + "%" : "OFF"}   ` +
         `TRIM ${(c.trim * 100).toFixed(0)}   FLAPS ${(fm.flapPos * 100).toFixed(0)}%   GEAR ${fm.gearPos > 0.99 ? "DOWN" : fm.gearPos < 0.01 ? "UP" : "MOVING"}` +
-        `${c.parkingBrake ? "   PARK BRAKE" : ""}${input.mouseYoke ? "   MOUSE YOKE" : ""}\n` +
-        crewStatus(cr);
+        `${c.parkingBrake ? "   PARK BRAKE" : ""}${input.mouseYoke ? "   MOUSE YOKE" : ""}` +
+        `${ap.engaged ? `   AP ${ap.altitudeFt.toFixed(0)} ft / ${ap.headingDeg.toFixed(0).padStart(3, "0")}` : ""}\n` +
+        crewStatus(cr) +
+        (atStation("radar_observer") && bombs
+          ? `\nBOMBS ${bombs.remaining}   DOORS ${fm.bombDoorPos > 0.95 ? "OPEN" : fm.bombDoorPos < 0.05 ? "CLOSED" : "MOVING"}   ` +
+            `${bombs.armed ? "ARMED" : "SAFE"}   MODE ${bombs.mode.toUpperCase()}   HITS ${range!.destroyedCount}/${range!.targets.length}` +
+            `\nO doors  K arm  M mode  Space release  V bombsight  A/D steer (autopilot)  Z autopilot`
+          : "") +
+        (crewMsgT > 0 ? `\n${crewMsg}` : "") +
+        (range && range.log.length ? `\n${range.log[0]}` : "");
     }
     yokeDot.style.display = input.mouseYoke ? "block" : "none";
+    sightEl.style.display = sightView ? "block" : "none";
+    aircraftRoot.visible = !(view === "inside" && sightView); // the optic looks out through its own window
     renderer.render(scene, camera);
+    aircraftRoot.visible = true;
+    impactEl.style.display = sightView ? "block" : "none";
   });
 });
 
@@ -206,7 +325,8 @@ function crewStatus(cr: Crew): string {
   if (view !== "inside") return "OUTSIDE VIEW";
   if (cr.mode === "seated" && cr.seat) {
     const name = STATION_NAMES[cr.seat.station] ?? cr.seat.station;
-    return `${name.toUpperCase()} SEAT   X: stand up${cr.seat.flies ? "" : "   (station not functional yet)"}`;
+    const working = cr.seat.flies || FUNCTIONAL.has(cr.seat.station);
+    return `${name.toUpperCase()} SEAT   X: stand up${working ? "" : "   (station not functional yet)"}`;
   }
   if (cr.mode === "climbing") return "ON LADDER";
   const it = cr.nearestInteraction();

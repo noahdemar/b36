@@ -13,6 +13,8 @@ export const KEY_HELP: [string, string][] = [
   ["B (hold)", "Wheel brakes"],
   ["P", "Parking brake"],
   ["Y", "Mouse yoke on / off"],
+  ["Z", "Autopilot on / off (holds altitude and heading)"],
+  ["N", "Start a bomb run (airborne, 15 km from the range)"],
   ["X", "Stand up from a seat"],
   ["E (walking)", "Sit down / use ladder (or click the seat)"],
   ["W A S D (walking)", "Walk; Shift faster, Ctrl crouch"],
