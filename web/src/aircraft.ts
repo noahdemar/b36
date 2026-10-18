@@ -75,7 +75,8 @@ export async function loadGltf(url: string) {
   const loader = new GLTFLoader();
   if (url.endsWith(".json")) {
     const gltf = await (await fetch(url)).json();
-    return (await loader.parseAsync(jsonToGlb(gltf), "")).scene;
+    const base = url.slice(0, url.lastIndexOf("/") + 1); // external textures resolve next to the file
+    return (await loader.parseAsync(jsonToGlb(gltf), base)).scene;
   }
   return (await loader.loadAsync(url)).scene;
 }

@@ -46,7 +46,7 @@ FUS_STATIONS = [
     (47.3, 0.74, 1.01),
     (48.3, 0.52, 1.02),
 ]
-FUS_SEGMENTS = 64
+FUS_SEGMENTS = 96
 
 # --- wing --- planform MEASURED; section data SOURCED
 WING_LE_D0 = 16.55        # LE at centerline (extrapolated)

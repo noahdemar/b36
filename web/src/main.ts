@@ -82,16 +82,23 @@ function flying() {
   return view === "inside" && crew?.mode === "seated" && !!crew.seat?.flies;
 }
 
-const MODEL_EXT = (window as unknown as { B36_MODEL_EXT?: string }).B36_MODEL_EXT ?? "glb";
+// Model files; the hosted build overrides these with JSON-embedded variants (see web/artifact/build.sh).
+const MODELS = (window as unknown as { B36_MODELS?: { exterior: string; interior: string } }).B36_MODELS
+  ?? { exterior: "models/b36.gltf", interior: "models/b36_interior.glb" };
 const navReq = fetch("models/b36_nav.json").then((r) => r.json() as Promise<NavData>);
-Promise.all([loadGltf(`models/b36.${MODEL_EXT}`), loadGltf(`models/b36_interior.${MODEL_EXT}`), navReq]).then(([ext, int, nav]) => {
+Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then(([ext, int, nav]) => {
   crew = new Crew(nav);
   crew.sit("Seat_AC");
   debugHook.crew = crew;
   const aircraft = new Aircraft(ext);
   const cockpit = new Cockpit(int);
   aircraftRoot.add(ext, int);
+  const aniso = renderer.capabilities.getMaxAnisotropy();
   ext.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      const m = o.material as THREE.MeshStandardMaterial;
+      for (const t of [m.map, m.normalMap, m.roughnessMap, m.metalnessMap]) if (t) t.anisotropy = aniso;
+    }
     if (o instanceof THREE.Mesh && (o.material as THREE.Material).transparent) o.castShadow = false;
     // stowed turrets sit inside the forward cabin; hide them from the cabin view
     if (o.name.startsWith("Turret_UpperFwd")) o.visible = false;

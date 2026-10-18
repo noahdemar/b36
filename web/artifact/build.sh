@@ -8,6 +8,8 @@ OUT=artifact/out
 rm -rf "$OUT" && mkdir -p "$OUT/assets" "$OUT/models"
 cp artifact/index.html "$OUT/index.html"
 cp dist/assets/index-*.js "$OUT/assets/game.js"
-for m in b36 b36_interior; do python3 -I ../tools/glb2json.py "public/models/$m.glb" "$OUT/models/$m.json"; done
+python3 -I ../tools/glb2json.py public/models/b36.gltf "$OUT/models/b36.json"
+python3 -I ../tools/glb2json.py public/models/b36_interior.glb "$OUT/models/b36_interior.json"
+cp -r public/models/textures "$OUT/models/textures"
 cp public/models/b36_nav.json "$OUT/models/b36_nav.json"
 echo "built $OUT"

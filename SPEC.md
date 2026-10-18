@@ -116,6 +116,27 @@ Long-term target for exterior and interior. Gap list, in planned order:
 3. Interior: real seat models, labeled switches and placards, panel lighting, cabin AO.
 4. LODs and performance budget (target 60 fps on mid GPUs), measured, not assumed.
 
+## Weapons, stations and realism pass (requested 2026-10-18)
+
+Decisions (confirmed): turrets aimed/fired from the real B-36H gunner stations (so the tunnel and aft
+compartment are built now); ground targets only (bombing range + ground gunnery targets); flight
+engineer gets engine management.
+
+Order of work:
+1. Airframe surface: analytic UVs on the procedural lofts; generated textures (panel lines, rivet
+   rows, per-panel natural-metal variation, insignia and lettering, light weathering) as color,
+   normal and roughness maps; more geometry detail. Textures ship as separate image files.
+2. Autopilot (altitude + heading hold) so the crew can leave the pilot seats.
+3. Bombs: loads in 4 bays, door control, radar observer / bombardier station with sight and
+   release (single / train / salvo), ballistic bombs with drag, impacts, bombing range with targets.
+4. Turrets (B-36H, 8 turrets, 16 x 20 mm): extend/retract, slew limits and rates, fire with tracers.
+   Gunner stations: nose (bombardier sight), upper forward L/R (forward compartment blisters),
+   upper aft L/R and lower aft L/R (aft compartment blisters), tail (radar gunner, aft compartment).
+   Tunnel with trolley from the forward compartment aft bulkhead to the aft compartment.
+5. Flight engineer: per-engine throttle, mixture, prop rpm, turbo boost, cowl flaps, ignition and
+   start, CHT / oil temp model, fuel tanks and consumption.
+6. Navigator chart with live position; APS-23 radar scope for the radar observer.
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part

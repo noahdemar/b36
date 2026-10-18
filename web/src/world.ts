@@ -75,7 +75,7 @@ export class World {
     const envScene = new THREE.Scene();
     envScene.add(sky.clone());
     scene.environment = pmrem.fromScene(envScene, 0, 1, 50_000).texture;
-    scene.environmentIntensity = 0.7;
+    scene.environmentIntensity = 0.5;
     scene.fog = new THREE.Fog(0xb8c6d4, 8_000, 40_000);
 
     this.sun = new THREE.DirectionalLight(0xfff1dc, 3.2);

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import params as P  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_OUT = os.path.normpath(os.path.join(HERE, "../../web/public/models/b36.glb"))
+DEFAULT_OUT = os.path.normpath(os.path.join(HERE, "../../web/public/models/b36.gltf"))
 
 
 # ---------------------------------------------------------------- materials
@@ -33,6 +33,35 @@ def make_material(name, color, metallic=0.0, roughness=0.5, alpha=1.0):
 
 
 MATS = {}
+TEX_DIR = os.path.join(HERE, "build_tex", "skin")
+
+
+def make_skin_material(name, maps):
+    """PBR metal skin: base colour, ORM (G roughness, B metallic) and tangent-space normal map."""
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    bsdf = nt.nodes["Principled BSDF"]
+
+    def img(path, non_color):
+        t = nt.nodes.new("ShaderNodeTexImage")
+        t.image = bpy.data.images.load(os.path.abspath(path))
+        if non_color:
+            t.image.colorspace_settings.name = "Non-Color"
+        return t
+
+    col = img(maps["color"], False)
+    nt.links.new(col.outputs["Color"], bsdf.inputs["Base Color"])
+    orm = img(maps["orm"], True)
+    sep = nt.nodes.new("ShaderNodeSeparateColor")
+    nt.links.new(orm.outputs["Color"], sep.inputs["Color"])
+    nt.links.new(sep.outputs["Green"], bsdf.inputs["Roughness"])
+    nt.links.new(sep.outputs["Blue"], bsdf.inputs["Metallic"])
+    nrm = img(maps["normal"], True)
+    nmap = nt.nodes.new("ShaderNodeNormalMap")
+    nt.links.new(nrm.outputs["Color"], nmap.inputs["Color"])
+    nt.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
+    return m
 
 
 def make_texture_material(name, image_path, roughness=0.6, emission=0.0, alpha_blend=False):
@@ -64,6 +93,27 @@ def init_materials():
     MATS["gear"] = make_material("GearGray", (0.45, 0.46, 0.47), 0.8, 0.45)
     MATS["gun"] = make_material("Gunmetal", (0.08, 0.08, 0.09), 0.9, 0.4)
     MATS["radome"] = make_material("Radome", (0.18, 0.17, 0.15), 0.0, 0.6)
+    MATS["chrome"] = make_material("Chrome", (0.85, 0.85, 0.86), 1.0, 0.12)
+    MATS["lamp_red"] = make_material("LampRed", (0.7, 0.03, 0.02), 0.0, 0.1, alpha=0.85)
+    MATS["lamp_green"] = make_material("LampGreen", (0.03, 0.6, 0.15), 0.0, 0.1, alpha=0.85)
+    MATS["lamp_white"] = make_material("LampWhite", (0.9, 0.9, 0.85), 0.0, 0.1, alpha=0.85)
+
+
+SKIN_NAMES = ["fuselage", "wing", "fin", "stab", "nacelle"]
+
+
+def skin_map_path(n, k):
+    return os.path.join(TEX_DIR, f"{n}_{k}.{'png' if k == 'normal' else 'jpg'}")
+
+
+def init_skin_materials(regen=False):
+    import textures
+    have = all(os.path.exists(skin_map_path(n, k)) for n in SKIN_NAMES for k in ("color", "orm", "normal"))
+    if regen or not have:
+        textures.build_all(TEX_DIR)
+    for key, n in (("skin_fus", "fuselage"), ("skin_wing", "wing"), ("skin_fin", "fin"), ("skin_stab", "stab"),
+                   ("skin_nac", "nacelle")):
+        MATS[key] = make_skin_material(f"Skin_{n.capitalize()}", {k: skin_map_path(n, k) for k in ("color", "orm", "normal")})
 
 
 # ---------------------------------------------------------------- mesh helpers
@@ -92,9 +142,10 @@ class MeshBuilder:
         self.face_mats.append(self.mat_index(mat))
         self.face_uvs.append(list(uv) if uv else None)
 
-    def loft(self, rings, closed=True, mat_fn=None, cap_start=False, cap_end=False, mat="alu"):
+    def loft(self, rings, closed=True, mat_fn=None, cap_start=False, cap_end=False, mat="alu", uvs=None, wrap_v=1.0):
         """rings: list of lists of points (equal length). mat_fn(i, j) -> mat key for quad
-        between ring i..i+1, point j..j+1."""
+        between ring i..i+1, point j..j+1. uvs: optional grid of (u, v) matching rings; the
+        closing quad of a closed loop uses v + 1 on its wrapped edge."""
         base = len(self.verts)
         n = len(rings[0])
         for ring in rings:
@@ -111,7 +162,12 @@ class MeshBuilder:
                 key = mat_fn(i, j) if mat_fn else mat
                 if key is None:
                     continue
-                self.add_face((a, b, c, d), key)
+                uv = None
+                if uvs:
+                    w = wrap_v if j2 == 0 and closed else 0.0
+                    uv = [uvs[i][j], (uvs[i][j2][0], uvs[i][j2][1] + w),
+                          (uvs[i + 1][j2][0], uvs[i + 1][j2][1] + w), uvs[i + 1][j]]
+                self.add_face((a, b, c, d), key, uv)
         if cap_start:
             self._cap(rings[0], base, reverse=True, mat=mat)
         if cap_end:
@@ -124,6 +180,11 @@ class MeshBuilder:
         for j in range(n):
             a, b = start + j, start + (j + 1) % n
             self.add_face((ci, b, a) if reverse else (ci, a, b), mat)
+
+    def map_uvs(self, fn):
+        """Apply fn(u, v) -> (u, v) to every face corner UV in place."""
+        self.face_uvs = [[fn(u, v) for u, v in f] if f else None for f in self.face_uvs]
+        return self
 
     def mirrored(self):
         m = MeshBuilder()
@@ -152,6 +213,7 @@ class MeshBuilder:
 
 
 ROOT = None
+REGEN_TEX = False
 
 
 def to_object(name, mb, frame=None, parent=None, smooth_angle=35.0, extras=None):
@@ -286,6 +348,17 @@ def airfoil_loop(f0, f1, tc, camber, n=36):
     return upper + lower
 
 
+def airfoil_v(f0, f1, n=36):
+    """Perimeter texture coordinate for each airfoil_loop point: upper TE->LE 0..0.5, lower LE->TE 0.5..1,
+    defined by chord fraction so truncated sections (control surfaces) map consistently."""
+    xs = cos_space(f0, f1, n)
+    upper = [0.5 * (1 - x) for x in reversed(xs)]
+    lower = [0.5 + 0.5 * x for x in xs]
+    if f0 == 0:
+        lower = lower[1:]
+    return upper + lower
+
+
 class Section:
     """A lifting-surface section: LE point, chord direction, thickness direction."""
 
@@ -307,16 +380,21 @@ class Section:
         return self.point(f, camber_line(f, self.camber))
 
 
-def surface(mb, sections, ranges, n=36, mat_fn=None, cap_end=True, cap_start=True):
-    """Loft sections. ranges[i] = (f0, f1) chord extent for section i."""
+def surface(mb, sections, ranges, n=36, mat_fn=None, cap_end=True, cap_start=True, u_fn=None, mat="alu"):
+    """Loft sections. ranges[i] = (f0, f1) chord extent for section i. u_fn(section) -> spanwise
+    texture coordinate; with it, faces get (u, perimeter v) UVs."""
     rings = [sec.ring(f0, f1, n) for sec, (f0, f1) in zip(sections, ranges)]
-    mb.loft(rings, closed=True, mat_fn=mat_fn, cap_start=cap_start, cap_end=cap_end)
+    uvs = None
+    if u_fn:
+        uvs = [[(u_fn(sec), v) for v in airfoil_v(f0, f1, n)] for sec, (f0, f1) in zip(sections, ranges)]
+    mb.loft(rings, closed=True, mat_fn=mat_fn, cap_start=cap_start, cap_end=cap_end, uvs=uvs, mat=mat)
     return rings
 
 
 def revolve(mb, center_fn, profile, seg=32, axis="y", scale=(1.0, 1.0), mat="alu",
-            mat_fn=None, cap_start=False, cap_end=False):
-    """Body of revolution along an axis. profile: [(t, r)], center_fn(t) -> Vector."""
+            mat_fn=None, cap_start=False, cap_end=False, uv=None):
+    """Body of revolution along an axis. profile: [(t, r)], center_fn(t) -> Vector.
+    uv=(u_scale, v_scale): UVs u = t * u_scale, v = angle fraction * v_scale."""
     rings = []
     for t, r in profile:
         c = center_fn(t)
@@ -331,8 +409,25 @@ def revolve(mb, center_fn, profile, seg=32, axis="y", scale=(1.0, 1.0), mat="alu
             else:
                 ring.append(c + Vector((u, w, 0)))
         rings.append(ring)
-    mb.loft(rings, closed=True, mat=mat, mat_fn=mat_fn, cap_start=cap_start, cap_end=cap_end)
+    uvs = None
+    if uv:
+        uvs = [[(t * uv[0], k / seg * uv[1]) for k in range(seg)] for t, _ in profile]
+    mb.loft(rings, closed=True, mat=mat, mat_fn=mat_fn, cap_start=cap_start, cap_end=cap_end, uvs=uvs,
+            wrap_v=uv[1] if uv else 1.0)
     return rings
+
+
+def plate(mb, corners, thick=0.02, mat="alu_dark"):
+    """Thin quad plate from 4 corners (CCW seen from the front), extruded along its normal."""
+    c = [Vector(p) for p in corners]
+    n = (c[1] - c[0]).cross(c[3] - c[0]).normalized() * (thick / 2)
+    f = [mb.add_vert(p + n) for p in c]
+    b = [mb.add_vert(p - n) for p in c]
+    mb.add_face(f, mat)
+    mb.add_face(list(reversed(b)), mat)
+    for i in range(4):
+        j = (i + 1) % 4
+        mb.add_face((f[i], b[i], b[j], f[j]), mat)
 
 
 def tube(mb, p0, p1, r, seg=16, mat="gear", r1=None):
@@ -432,6 +527,9 @@ def canopy_frames(r_tube, inset=0.0, mat="alu_dark", seg=10):
     return mb
 
 
+FUS_TEX_LEN = FUS_D[-1]  # fuselage texture u = d / FUS_TEX_LEN (matches textures.py)
+
+
 def build_fuselage():
     end = FUS_D[-1]
     ds = set()
@@ -473,7 +571,7 @@ def build_fuselage():
             return "black"
         if dm < 2.45 and from_top < math.radians(72):
             return "black"
-        return "alu"
+        return "skin_fus"
 
     def mat_fn(i, j):
         c = classify(i, j)
@@ -482,7 +580,8 @@ def build_fuselage():
             return None
         return c
 
-    hull.loft(rings, closed=True, mat_fn=mat_fn, cap_start=True, cap_end=True)
+    fus_uv = [[(d / FUS_TEX_LEN, k / n) for k in range(n)] for d in ds]
+    hull.loft(rings, closed=True, mat_fn=mat_fn, cap_start=True, cap_end=True, uvs=fus_uv)
     to_object("Fuselage", hull)
 
     # Bomb bay doors: same skin patches, slightly inset so seams read.
@@ -499,7 +598,9 @@ def build_fuselage():
             return vid[(i, j)]
 
         for i, j in quads:
-            mb.add_face((v(i, j), v(i, j + 1), v(i + 1, j + 1), v(i + 1, j)), "alu_dark")
+            uv = [(ds[i] / FUS_TEX_LEN, j / n), (ds[i] / FUS_TEX_LEN, (j + 1) / n),
+                  (ds[i + 1] / FUS_TEX_LEN, (j + 1) / n), (ds[i + 1] / FUS_TEX_LEN, j / n)]
+            mb.add_face((v(i, j), v(i, j + 1), v(i + 1, j + 1), v(i + 1, j)), "skin_fus", uv)
         a, b = P.BOMB_BAYS[bi]
         pivot = Vector((0, fus_y(0.5 * (a + b)), 0.0))
         to_object(f"BombDoor_B{bi + 1}_{side}", mb, frame=translation(pivot),
@@ -541,7 +642,34 @@ def build_fuselage():
     for d, h in ((14.0, 0.9), (27.0, 0.7)):
         top = fus_center_z(d) + fus_radius(d)
         tube(mb, (0, fus_y(d), top - 0.1), (0, fus_y(d) - 0.35, top + h), 0.05, seg=8, mat="alu_dark", r1=0.02)
+    # long-wire antennas from the fin to dorsal masts (ESTIMATED routing)
+    fin_top = Vector((0, fus_y(44.6), 9.2))
+    for d_mast, xo in ((24.0, 0.25), (24.0, -0.25)):
+        top = fus_center_z(d_mast) + fus_radius(d_mast)
+        mast = Vector((xo, fus_y(d_mast), top + 0.55))
+        tube(mb, Vector((xo * 0.5, mast.y, top - 0.05)), mast, 0.03, seg=6, mat="alu_dark", r1=0.015)
+        tube(mb, mast, fin_top, 0.006, seg=4, mat="black")
+    # pitot tubes on the nose sides
+    for sx in (1, -1):
+        p = Vector((sx * 1.05, fus_y(2.2), 0.55))
+        tube(mb, p, p + Vector((sx * 0.12, 0.05, 0)), 0.02, seg=6, mat="alu_dark")
+        tube(mb, p + Vector((sx * 0.12, 0.05, 0)), p + Vector((sx * 0.12, 0.55, 0)), 0.012, seg=6, mat="alu_dark")
+    # blade and whip antennas under the fuselage
+    for d_a in (11.5, 27.5, 31.5):
+        b = fus_center_z(d_a) - fus_radius(d_a)
+        tube(mb, Vector((0, fus_y(d_a), b + 0.05)), Vector((0, fus_y(d_a) - 0.25, b - 0.55)), 0.02, seg=6, mat="alu_dark", r1=0.008)
     to_object("Antennas", mb)
+    # navigation lights (wingtips red left / green right, tail white) and landing lights
+    lm = MeshBuilder()
+    for sx, mat in ((1, "lamp_green"), (-1, "lamp_red")):
+        tip = wing_section(P.SEMISPAN - 0.25)
+        c = tip.point(0.3, 0)
+        ellipsoid(lm, (sx * (P.SEMISPAN - 0.12), c.y, c.z), (0.10, 0.22, 0.07), seg=12, rings_n=6, mat=mat)
+        ls = wing_section(10.4)
+        q = ls.point(0.04, camber_line(0.04, ls.camber) - naca_thickness(0.04, ls.tc))
+        ellipsoid(lm, (sx * 10.4, q.y, q.z + 0.02), (0.18, 0.06, 0.12), seg=12, rings_n=6, mat="glass")
+    ellipsoid(lm, (0, fus_y(FUS_D[-1]) + 1.2, fus_center_z(FUS_D[-1]) + 0.62), (0.05, 0.08, 0.05), seg=8, rings_n=4, mat="lamp_white")
+    to_object("Lights", lm)
 
 
 # ---------------------------------------------------------------- wing
@@ -630,13 +758,13 @@ def build_wing():
         near_le = -1 <= jm - n <= 3
         if near_le and any(abs(x - ex) < 0.95 for ex in P.ENGINE_X):
             return "intake"
-        return "alu"
+        return "skin_wing"
 
     mb = MeshBuilder()
-    surface(mb, secs, ranges, n=n, mat_fn=mat_fn)
+    surface(mb, secs, ranges, n=n, mat_fn=mat_fn, u_fn=span_u(P.SEMISPAN))
     full = MeshBuilder()
     full.extend(mb)
-    full.extend(mb.mirrored())
+    full.extend(mb.mirrored().map_uvs(lambda u, v: (1 - u, v)))
     to_object("Wing", full)
 
     # Control surfaces
@@ -645,10 +773,10 @@ def build_wing():
         xs_cs = [lerp(a, b, k / 6) for k in range(7)]
         secs_cs = [wing_section(x) for x in xs_cs]
         mb = MeshBuilder()
-        surface(mb, secs_cs, [(P.HINGE_FRAC + gap, 1.0)] * len(secs_cs), n=12)
+        surface(mb, secs_cs, [(P.HINGE_FRAC + gap, 1.0)] * len(secs_cs), n=12, u_fn=span_u(P.SEMISPAN), mat="skin_wing")
         h0 = secs_cs[0].hinge_point(P.HINGE_FRAC)
         h1 = secs_cs[-1].hinge_point(P.HINGE_FRAC)
-        for side, geo in (("R", mb), ("L", mb.mirrored())):
+        for side, geo in (("R", mb), ("L", mb.mirrored().map_uvs(lambda u, v: (1 - u, v)))):
             if side == "L":
                 p0, p1 = Vector((-h1.x, h1.y, h1.z)), Vector((-h0.x, h0.y, h0.z))
             else:
@@ -692,7 +820,7 @@ def build_engines():
                 (t_te, 0.95), (t_te + 0.4 * (1 - t_te), 0.92), (t_te + 0.75 * (1 - t_te), 0.74),
                 (1.0, 0.46)]
         mb = MeshBuilder()
-        revolve(mb, center, prof, seg=40, scale=(P.NACELLE_W / 1.9, 1.0))
+        revolve(mb, center, prof, seg=40, scale=(P.NACELLE_W / 1.9, 1.0), mat="skin_nac", uv=(1.0, 1.0))
         # Chin intake under the leading edge
         ellipsoid(mb, (ex, y_front - 0.35, z_front - 0.22), (0.62, 0.32, 0.24), seg=24, rings_n=10, mat="intake")
         # Exhaust stubs either side of nacelle aft of TE
@@ -704,6 +832,19 @@ def build_engines():
         c = center(ring_t)
         revolve(mb, lambda t, c=c: c + Vector((0, -t, 0)),
                 [(0.0, 0.945), (0.10, 0.945)], seg=40, scale=(P.NACELLE_W / 1.9, 1.0), mat="exhaust")
+        # cowl flaps (gills) around the aft cowling, opened slightly
+        cg = center(0.92)
+        ng = 22
+        for k in range(ng):
+            a0 = 2 * math.pi * k / ng
+            a1 = 2 * math.pi * (k + 0.82) / ng
+            sw = P.NACELLE_W / 1.9
+            rr = 0.80
+            p0 = cg + Vector((math.sin(a0) * rr * sw, 0.10, math.cos(a0) * rr))
+            p1 = cg + Vector((math.sin(a1) * rr * sw, 0.10, math.cos(a1) * rr))
+            q1 = cg + Vector((math.sin(a1) * (rr + 0.07) * sw, -0.32, math.cos(a1) * (rr + 0.07)))
+            q0 = cg + Vector((math.sin(a0) * (rr + 0.07) * sw, -0.32, math.cos(a0) * (rr + 0.07)))
+            plate(mb, [p0, p1, q1, q0], thick=0.012, mat="alu_dark")
         for side, geo in (("R", mb), ("L", mb.mirrored())):
             to_object(f"Nacelle_{side}{idx + 1}", geo)
         build_prop(idx, Vector((ex, prop_y, axis_z)))
@@ -794,19 +935,46 @@ def split_stations(vals, a, b, inner_range, outer=(0, 1)):
     return out
 
 
+FIN_LE_FN = pchip([p[0] for p in P.FIN_LE], [p[1] for p in P.FIN_LE])
+FIN_TE_FN = pchip([p[0] for p in P.FIN_TE], [p[1] for p in P.FIN_TE])
+FIN_Z_TOP = P.FIN_LE[-1][0]
+
+
+def FIN_SECTION_FN(z):
+    le, te = FIN_LE_FN(z), FIN_TE_FN(z)
+    c = max(te - le, 0.02)
+    tc = min(0.12, P.FIN_MAX_THICK / c)
+    if z > 9.3:  # thin out into the rounded tip
+        tc *= lerp(1.0, 0.4, (z - 9.3) / (FIN_Z_TOP - 9.3))
+    return Section((0, fus_y(le), z), (0, -1, 0), (-1, 0, 0), c, tc)
+
+
+def HT_PLANFORM(x):
+    semi = P.HT_SEMISPAN
+    le = P.HT_LE_D0 + x * P.HT_LE_SWEEP
+    c = P.HT_TE_D0 + x * P.HT_TE_SWEEP - le
+    f = tip_round(x, P.HT_TIP_ROUND_X, semi)
+    return le + 0.5 * c * (1 - f), c * f
+
+
+def HT_SECTION_FN(x):
+    le, c = HT_PLANFORM(x)
+    tc = lerp(0.13, 0.10, x / P.HT_SEMISPAN)
+    return Section((x, fus_y(le), P.HT_Z), (0, -1, 0), (0, 0, 1), c, tc)
+
+
+def fin_u(sec):
+    return (sec.le.z - P.FIN_ROOT_Z) / (FIN_Z_TOP - P.FIN_ROOT_Z)
+
+
+def span_u(semi):
+    """Right-side spanwise texture coordinate; the mirrored left side uses 1 - u."""
+    return lambda sec: 0.5 + 0.5 * sec.le.x / semi
+
+
 def build_tail():
     # ---- Vertical fin: span along z, contour from the three-view
-    le_fn = pchip([p[0] for p in P.FIN_LE], [p[1] for p in P.FIN_LE])
-    te_fn = pchip([p[0] for p in P.FIN_TE], [p[1] for p in P.FIN_TE])
-    z_top = P.FIN_LE[-1][0]
-
-    def fin_sec(z):
-        le, te = le_fn(z), te_fn(z)
-        c = max(te - le, 0.02)
-        tc = min(0.12, P.FIN_MAX_THICK / c)
-        if z > 9.3:  # thin out into the rounded tip
-            tc *= lerp(1.0, 0.4, (z - 9.3) / (z_top - 9.3))
-        return Section((0, fus_y(le), z), (0, -1, 0), (-1, 0, 0), c, tc)
+    le_fn, te_fn, z_top, fin_sec = FIN_LE_FN, FIN_TE_FN, FIN_Z_TOP, FIN_SECTION_FN
 
     def hinge_f(z):
         sec_le, sec_te = le_fn(z), te_fn(z)
@@ -819,13 +987,13 @@ def build_tail():
         secs.append(fin_sec(z))
         ranges.append((0, hinge_f(z)) if rng == "hinge" else rng)
     mb = MeshBuilder()
-    surface(mb, secs, ranges, n=32)
+    surface(mb, secs, ranges, n=32, u_fn=fin_u, mat="skin_fin")
     to_object("Fin", mb)
 
     rzs = [lerp(rz0, rz1, k / 10) for k in range(11)]
     rsecs = [fin_sec(z) for z in rzs]
     mb = MeshBuilder()
-    surface(mb, rsecs, [(hinge_f(z) + 0.01, 1) for z in rzs], n=12)
+    surface(mb, rsecs, [(hinge_f(z) + 0.01, 1) for z in rzs], n=12, u_fn=fin_u, mat="skin_fin")
     p0 = Vector((0, fus_y(P.RUDDER_HINGE_D), rz0))
     p1 = Vector((0, fus_y(P.RUDDER_HINGE_D), rz1))
     to_object("Rudder", mb, frame=hinge_frame(p0, p1, up=Vector((-1, 0, 0))),
@@ -834,16 +1002,7 @@ def build_tail():
     # ---- Horizontal tail: planform from the three-view, rounded tips
     semi = P.HT_SEMISPAN
 
-    def ht_planform(x):
-        le = P.HT_LE_D0 + x * P.HT_LE_SWEEP
-        c = P.HT_TE_D0 + x * P.HT_TE_SWEEP - le
-        f = tip_round(x, P.HT_TIP_ROUND_X, semi)
-        return le + 0.5 * c * (1 - f), c * f
-
-    def ht_sec(x):
-        le, c = ht_planform(x)
-        tc = lerp(0.13, 0.10, x / semi)
-        return Section((x, fus_y(le), P.HT_Z), (0, -1, 0), (0, 0, 1), c, tc)
+    ht_planform, ht_sec = HT_PLANFORM, HT_SECTION_FN
 
     def ht_hinge_f(x):
         le0 = P.HT_LE_D0 + x * P.HT_LE_SWEEP
@@ -859,21 +1018,21 @@ def build_tail():
         secs.append(ht_sec(x))
         ranges.append((0, ht_hinge_f(x)) if rng == "hinge" else rng)
     mb = MeshBuilder()
-    surface(mb, secs, ranges, n=28)
+    surface(mb, secs, ranges, n=28, u_fn=span_u(semi), mat="skin_stab")
     full = MeshBuilder()
     full.extend(mb)
-    full.extend(mb.mirrored())
+    full.extend(mb.mirrored().map_uvs(lambda u, v: (1 - u, v)))
     to_object("Stabilizer", full)
 
     exs = [lerp(e0, e1, k / 10) for k in range(11)]
     esecs = [ht_sec(x) for x in exs]
     mb = MeshBuilder()
-    surface(mb, esecs, [(ht_hinge_f(x) + 0.01, 1) for x in exs], n=10)
+    surface(mb, esecs, [(ht_hinge_f(x) + 0.01, 1) for x in exs], n=10, u_fn=span_u(semi), mat="skin_stab")
     h0 = esecs[0].hinge_point(ht_hinge_f(e0))
     h1 = esecs[-1].hinge_point(ht_hinge_f(e1))
     to_object("Elevator_R", mb, frame=hinge_frame(h0, h1),
               extras={"part": "elevator", "side": "R", "axis": [1.0, 0.0, 0.0]})
-    to_object("Elevator_L", mb.mirrored(),
+    to_object("Elevator_L", mb.mirrored().map_uvs(lambda u, v: (1 - u, v)),
               frame=hinge_frame(Vector((-h1.x, h1.y, h1.z)), Vector((-h0.x, h0.y, h0.z))),
               extras={"part": "elevator", "side": "L", "axis": [1.0, 0.0, 0.0]})
 
@@ -899,8 +1058,18 @@ def build_gear():
         x = sx * P.MAIN_GEAR_X
         top = Vector((x, fus_y(P.MAIN_GEAR_D), wing_section(P.MAIN_GEAR_X).point(0.5, 0).z - 0.6))
         bogie_z = g + P.MAIN_WHEEL_R
-        tube(mb, top, (x, fus_y(P.MAIN_GEAR_D), bogie_z + 0.25), 0.2, seg=16)
-        tube(mb, (x, fus_y(P.MAIN_GEAR_D), bogie_z + 0.25), (x, fus_y(P.MAIN_GEAR_D), bogie_z), 0.15, seg=16)
+        yg = fus_y(P.MAIN_GEAR_D)
+        tube(mb, top, (x, yg, bogie_z + 0.85), 0.21, seg=20)
+        tube(mb, (x, yg, bogie_z + 0.95), (x, yg, bogie_z + 0.05), 0.14, seg=20, mat="chrome")  # oleo
+        for k in (-1, 1):  # torque links
+            tube(mb, (x, yg + 0.22 * k, bogie_z + 0.85), (x, yg + 0.30 * k, bogie_z + 0.48), 0.035, seg=8)
+            tube(mb, (x, yg + 0.30 * k, bogie_z + 0.48), (x, yg + 0.16 * k, bogie_z + 0.12), 0.035, seg=8)
+        tube(mb, (x - sx * 1.4, yg - 0.3, top.z + 0.15), (x, yg, bogie_z + 1.6), 0.075, seg=10)  # side brace
+        wz = wing_section(P.MAIN_GEAR_X).point(0.5, 0).z - 0.75
+        for k in (-1, 1):  # gear bay doors hanging from the wing underside
+            xd = x + k * 0.95
+            plate(mb, [(xd, yg + 1.5, wz), (xd, yg - 1.3, wz), (xd, yg - 1.3, wz - 1.25), (xd, yg + 1.5, wz - 1.25)],
+                  thick=0.03, mat="skin_wing")
         # drag brace
         tube(mb, (x, fus_y(P.MAIN_GEAR_D) + 2.2, top.z + 0.2), (x, fus_y(P.MAIN_GEAR_D), bogie_z + 1.4), 0.09, seg=10)
         tube(mb, (x, fus_y(P.MAIN_GEAR_D) + 0.9, bogie_z), (x, fus_y(P.MAIN_GEAR_D) - 0.9, bogie_z), 0.12, seg=12)
@@ -915,7 +1084,13 @@ def build_gear():
     y = fus_y(P.NOSE_GEAR_D)
     top = Vector((0, y, fus_center_z(P.NOSE_Y - y) - fus_radius(P.NOSE_Y - y) + 0.3))
     wz = g + P.NOSE_WHEEL_R
-    tube(mb, top, (0, y - 0.25, wz + 0.2), 0.16, seg=14)
+    tube(mb, top, (0, y - 0.1, wz + 0.75), 0.17, seg=16)
+    tube(mb, (0, y - 0.12, wz + 0.85), (0, y - 0.25, wz + 0.1), 0.11, seg=16, mat="chrome")
+    zb = top.z - 0.15
+    for k in (-1, 1):  # nose gear doors
+        xd = k * 0.55
+        plate(mb, [(xd, y + 1.0, zb), (xd, y - 1.0, zb), (xd, y - 1.0, zb - 0.85), (xd, y + 1.0, zb - 0.85)],
+              thick=0.03, mat="skin_fus")
     tube(mb, (-0.45, y - 0.25, wz), (0.45, y - 0.25, wz), 0.07, seg=10)
     for dx in (-0.3, 0.3):
         wheel(mb, (dx, y - 0.25, wz), P.NOSE_WHEEL_R, 0.32)
@@ -1000,6 +1175,7 @@ def build():
     global ROOT
     bpy.ops.wm.read_factory_settings(use_empty=True)
     init_materials()
+    init_skin_materials(REGEN_TEX)
     ROOT = None
     ROOT = empty("B36", extras={"generator": "build_b36.py", "units": "m"})
     build_fuselage()
@@ -1013,15 +1189,20 @@ def build():
 
 def export(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", export_yup=True,
-                              export_extras=True, export_apply=True)
+    fmt = "GLB" if path.endswith(".glb") else "GLTF_SEPARATE"
+    kw = {"export_texture_dir": "textures"} if fmt == "GLTF_SEPARATE" else {}
+    bpy.ops.export_scene.gltf(filepath=path, export_format=fmt, export_yup=True,
+                              export_extras=True, export_apply=True, export_image_format="AUTO", **kw)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--blend", default=None)
+    ap.add_argument("--retex", action="store_true", help="regenerate skin textures")
     args = ap.parse_args()
+    global REGEN_TEX
+    REGEN_TEX = args.retex
     build()
     tris = sum(sum(len(p.vertices) - 2 for p in o.data.polygons)
                for o in bpy.data.objects if o.type == "MESH")
