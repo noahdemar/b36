@@ -173,6 +173,75 @@ export class DamageFX {
     if (distance < 150) this.shake = Math.max(this.shake, Math.min(1, 40 / Math.max(distance, 10)));
   }
 
+  /** Fireball, smoke and burning debris (a fighter blowing up), world (sim) frame. */
+  explosion(w: THREE.Vector3, vel: THREE.Vector3) {
+    const v = new THREE.Vector3();
+    this.fire.spawn(w, vel.clone().multiplyScalar(0.3), 30, 40, 0.35, 1, [1.0, 0.75, 0.4]);
+    for (let k = 0; k < 26; k++) {
+      v.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize().multiplyScalar(10 + Math.random() * 30);
+      this.fire.spawn(w.clone().addScaledVector(v, 0.1), v.clone().addScaledVector(vel, 0.5), 3 + Math.random() * 5, 8, 0.4 + Math.random() * 0.6, 0.9, [1.0, 0.45 + Math.random() * 0.2, 0.1]);
+      this.smoke.spawn(w.clone().addScaledVector(v, 0.2), v.clone().multiplyScalar(0.3).addScaledVector(vel, 0.3), 5 + Math.random() * 4, 4, 8 + Math.random() * 6, 0.8, [0.08, 0.075, 0.07]);
+    }
+  }
+
+  /** Bright strike flashes (rounds hitting metal), world frame. */
+  sparks(w: THREE.Vector3, vel: THREE.Vector3, big = false) {
+    const v = new THREE.Vector3();
+    this.fire.spawn(w, vel, big ? 5 : 2.2, big ? 10 : 4, big ? 0.12 : 0.07, 1, [1.0, 0.9, 0.7]);
+    for (let k = 0; k < (big ? 10 : 4); k++) {
+      v.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(30);
+      this.fire.spawn(w, v.add(vel), 0.3, 0, 0.25, 1, [1.0, 0.7, 0.3]);
+    }
+    if (big) this.smoke.spawn(w, vel.clone().multiplyScalar(0.8), 2.5, 3, 3, 0.6, [0.1, 0.1, 0.1]);
+  }
+
+  /** Gun muzzle: flash, smoke left behind in the slipstream, an ejected case. world frame. */
+  muzzle(w: THREE.Vector3, dir: THREE.Vector3, carrierVel: THREE.Vector3, smoke: boolean) {
+    this.fire.spawn(w.clone().addScaledVector(dir, 0.4), carrierVel, 1.1 + Math.random() * 0.5, 3, 0.045, 1, [1.0, 0.8, 0.45]);
+    if (smoke) this.smoke.spawn(w, carrierVel.clone().multiplyScalar(0.55), 0.6, 2.2, 1.6, 0.35, [0.6, 0.6, 0.58]);
+    const c = new THREE.Vector3((Math.random() - 0.5) * 3, -4 - Math.random() * 3, (Math.random() - 0.5) * 3);
+    this.fire.spawn(w, carrierVel.clone().multiplyScalar(0.7).add(c), 0.05, 0, 0.6, 0.6, [0.8, 0.6, 0.25]); // brass glint
+  }
+
+  /** Trail behind a damaged fighter, laid along its path this frame. */
+  fighterTrail(prev: THREE.Vector3, pos: THREE.Vector3, smoking: boolean, burning: boolean) {
+    const n = Math.min(30, Math.max(1, Math.ceil(prev.distanceTo(pos) / 2.5)));
+    const j = new THREE.Vector3();
+    for (let k = 1; k <= n; k++) {
+      const q = prev.clone().lerp(pos, k / n);
+      j.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(1.5);
+      if (burning) this.fire.spawn(q, j, 1.8, 3, 0.18, 0.9, [1.0, 0.5, 0.12]);
+      if (smoking || burning) this.smoke.spawn(q, j, burning ? 2.2 : 1.4, 3, burning ? 9 : 5, burning ? 0.7 : 0.4, burning ? [0.1, 0.1, 0.1] : [0.35, 0.35, 0.35]);
+    }
+  }
+
+  /** Hole decal where a shell struck: ray from where it came from toward the hit point (model coords). */
+  holeAlong(fromLocal: THREE.Vector3, atLocal: THREE.Vector3, big = false) {
+    const dir = atLocal.clone().sub(fromLocal).normalize();
+    const start = atLocal.clone().addScaledVector(dir, -3);
+    this.holesAlongRay(start, dir, big ? 0.18 : 0.07);
+  }
+
+  private holesAlongRay(startLocal: THREE.Vector3, dirLocal: THREE.Vector3, size: number) {
+    const meshes: THREE.Object3D[] = [];
+    this.ext.traverse((o) => { if ((o as THREE.Mesh).isMesh && o.visible) meshes.push(o); });
+    const toScene = this.aircraftRoot.matrixWorld;
+    const origin = startLocal.clone().applyMatrix4(toScene);
+    this.ray.set(origin, dirLocal.clone().transformDirection(toScene));
+    this.ray.far = 8;
+    const hit = this.ray.intersectObjects(meshes, false)[0];
+    if (!hit || !hit.face) return;
+    const inv = toScene.clone().invert();
+    const nLocal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).transformDirection(inv);
+    const pLocal = this.aircraftRoot.worldToLocal(hit.point.clone()).addScaledVector(nLocal, 0.01);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), nLocal);
+    const s = size * (0.7 + Math.random() * 0.6);
+    this.holes.setMatrixAt(this.nHoles % 600, new THREE.Matrix4().compose(pLocal, q, new THREE.Vector3(s, s, s)));
+    this.nHoles++;
+    this.holes.count = Math.min(this.nHoles, 600);
+    this.holes.instanceMatrix.needsUpdate = true;
+  }
+
   /** Hole decals where fragments struck, by raycasting from the burst toward each part hit. */
   holesFrom(burstLocal: THREE.Vector3, hits: { comp: Component; hits: number }[]) {
     const meshes: THREE.Object3D[] = [];

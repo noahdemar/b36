@@ -919,7 +919,9 @@ def build_aft_compartment(uv):
             wbox(mb2 := MeshBuilder(), sx * 0.55, sx * 1.25, d - 0.45, d + 0.45, fz, floor, "floor")
             to_object(f"Int_Platform_{side}", mb2)
         build_seat(name, f"gunner_{'upper' if upper else 'lower'}_aft_{side}", sx * 0.85, d, -sx * math.pi / 2,
-                   floor=floor, eye_up=c.z - floor - 0.02, stand=(sx * 0.15, d))
+                   floor=floor, eye_up=c.z - floor - 0.02,
+                   # lower stations sit beside the tail gunner's seat: approach from forward of it
+                   stand=(sx * 0.15, d) if upper else (sx * 0.42, d - 0.65))
         SEATS[-1]["deck"] = "aft"
         pair = ["Turret_UpperAft_L", "Turret_UpperAft_R"] if upper else ["Turret_LowerAft_L", "Turret_LowerAft_R"]
         SEATS[-1]["sight"] = {"eye": [c.x - sx * 0.12, c.z, d - P.NOSE_Y], "turrets": pair}
@@ -1019,15 +1021,16 @@ def build_consoles():
 def build_engineer(uv):
     """Flight engineer station behind the right seat: panel facing forward, seat facing aft."""
     d = 7.25
-    f = frame_from(W(0.05, d, 0), (1, 0, 0), (0, 0, 1))
+    x0 = 0.20  # inboard edge, leaves a straight walkway past the ladder opening
+    f = frame_from(W(x0, d, 0), (1, 0, 0), (0, 0, 1))
     f = f @ Matrix.Rotation(math.pi, 4, "Y")   # face +Y (forward)
-    f.translation = W(0.05, d, 0)
+    f.translation = W(x0, d, 0)
     # outline follows the hull cross-section
-    x_max = 1.30
+    x_max = 1.15
     pts = [(0.0, 0.80), (-x_max, 0.80)]
     for k in range(15):
         x = x_max * (1 - k / 14)
-        top = min(1.95, B.fus_center_z(d) + math.sqrt(max((B.fus_radius(d) - 0.12) ** 2 - (x + 0.05) ** 2, 0)))
+        top = min(1.95, B.fus_center_z(d) + math.sqrt(max((B.fus_radius(d) - 0.12) ** 2 - (x + x0) ** 2, 0)))
         pts.append((-x, top))
     mb = MeshBuilder()
     polygon_plate(mb, f, pts, 0.04, "panel")
@@ -1046,12 +1049,12 @@ def build_engineer(uv):
     # Fuel quantity, left and right manifolds
     for k, side in enumerate("LR"):
         name = f"FE_Fuel{side}"
-        build_instrument(name, "fuelq", f @ Matrix.Translation((-1.02, 1.12 - 0.17 * k, 0)), 0.065, uv, depth=0.03)
+        build_instrument(name, "fuelq", f @ Matrix.Translation((-0.93, 1.12 - 0.17 * k, 0)), 0.065, uv, depth=0.03)
         bpy.data.objects[f"{name}_Needle0"]["source"] = f"fuel_{side}"
     mb = MeshBuilder()
-    wbox(mb, 0.05, 1.35, d - 0.45, d, 0.74, 0.79, "panel")   # desk
+    wbox(mb, x0, 1.35, d - 0.45, d, 0.74, 0.79, "panel")   # desk
     to_object("Int_FE_Desk", mb)
-    obstacle("fe_panel", 0.05, 1.7, d - 0.45, d + 0.05, FLOOR_Z, 2.0)
+    obstacle("fe_panel", x0, 1.7, d - 0.45, d + 0.05, FLOOR_Z, 2.0)
     build_seat("Seat_FE", "flight_engineer", 0.70, 6.45, math.pi, eye_up=1.25, stand=(0.70, 5.55))
 
 
@@ -1091,7 +1094,7 @@ def export_nav(path):
     """Walkable decks, obstacles, ceilings, ladders and seats in model (three.js) coordinates:
     x right, y up, z aft = d - NOSE_Y."""
     zc = lambda d: d - P.NOSE_Y  # noqa: E731
-    r = 0.24  # crew capsule radius, kept off the hull side
+    r = 0.20  # crew capsule radius (shoulders turned sideways in tight spots), kept off the hull side
 
     def wall(d, floor):
         return min(hull_half_width(d0, floor + 0.55) for d0 in (d,)) - r

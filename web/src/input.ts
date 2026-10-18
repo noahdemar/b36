@@ -14,9 +14,13 @@ export const KEY_HELP: [string, string][] = [
   ["P", "Parking brake"],
   ["Y", "Mouse yoke on / off"],
   ["Z", "Autopilot on / off (holds altitude and heading)"],
-  ["N", "Start a bomb run (airborne, 15 km from the range)"],
+  ["N", "Start a bomb run (airborne, 15 km from the range; fighters intercept)"],
+  ["L", "Fighter attack: 25,000 ft, three waves of MiG-15s"],
+  ["At a gun station", "Mouse aims (click locks the pointer), hold left button or Space fires, wheel sets range (frame the wings in the diamonds), G range assist, U turrets out/in, Shift+wheel zoom"],
   ["X", "Stand up from a seat"],
-  ["E (walking)", "Sit down / use ladder (or click the seat)"],
+  ["E (walking)", "Sit down / use ladder / enter tunnel hatch"],
+  ["Click a seat, ladder or hatch", "Walk there and use it"],
+  ["Tab", "Crew stations: walk to any station (ladder and tunnel included)"],
   ["W A S D (walking)", "Walk; Shift faster, Ctrl crouch"],
   ["C", "Inside / outside view"],
   ["R / Shift+R", "Reset on runway (engines running / cold and dark)"],
@@ -37,7 +41,7 @@ export class KeyboardInput {
       if (e.repeat) return;
       this.down.add(e.code);
       this.pressed.push(e.code + (e.shiftKey ? "+S" : ""));
-      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space"].includes(e.code)) e.preventDefault();
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space", "Tab"].includes(e.code)) e.preventDefault();
     });
     target.addEventListener("keyup", (e) => this.down.delete(e.code));
     target.addEventListener("blur", () => this.down.clear());

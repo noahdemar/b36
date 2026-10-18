@@ -45,6 +45,9 @@ export class Crew {
   eyeHeight: number;
   private climb: { ladder: Ladder; s: number; dir: 1 | -1; length: number } | null = null;
   tunnel: { t: Tunnel; s: number; length: number; dir: 1 | -1 } | null = null;
+  /** Walking on its own toward an interaction (click-to-walk, station list); any movement key cancels. */
+  auto: { goal: Interaction; leg: Interaction; path: [number, number][]; i: number } | null = null;
+  private grids = new Map<string, { x0: number; z0: number; nx: number; nz: number; ok: Uint8Array }>();
 
   constructor(nav: NavData) {
     this.nav = nav;
@@ -151,6 +154,215 @@ export class Crew {
     return best;
   }
 
+  /** Deck a goal is on, and the floor point to walk to for it. */
+  private goalSpot(g: Interaction, deck: string): [number, number] | null {
+    if (g.kind === "seat") return g.seat.deck === deck ? [g.seat.stand[0], g.seat.stand[2]] : null;
+    if (g.kind === "tunnel") {
+      const e = g.tunnel.ends[g.end];
+      return e.deck === deck ? [e.stand[0], e.stand[2]] : null;
+    }
+    const p = g.ladder.path;
+    if (deck === g.ladder.lower) return [p[0][0], p[0][2]];
+    if (deck === g.ladder.upper) return [p[p.length - 1][0], p[p.length - 1][2]];
+    return null;
+  }
+
+  /** Ways off a deck: ladders and tunnel ends, with the deck they lead to. */
+  private exits(deck: string): { via: Interaction; to: string }[] {
+    const out: { via: Interaction; to: string }[] = [];
+    for (const l of this.nav.ladders) {
+      if (l.lower === deck) out.push({ via: { kind: "ladder", ladder: l }, to: l.upper });
+      if (l.upper === deck) out.push({ via: { kind: "ladder", ladder: l }, to: l.lower });
+    }
+    for (const t of this.nav.tunnels ?? []) t.ends.forEach((e, i) => {
+      if (e.deck === deck) out.push({ via: { kind: "tunnel", tunnel: t, end: i as 0 | 1 }, to: t.ends[1 - i].deck });
+    });
+    return out;
+  }
+
+  private goalDecks(g: Interaction): string[] {
+    if (g.kind === "seat") return [g.seat.deck];
+    if (g.kind === "tunnel") return [g.tunnel.ends[g.end].deck];
+    return [g.ladder.lower, g.ladder.upper];
+  }
+
+  /** Next interaction to walk to on the current deck on the way to `goal` (breadth-first over decks). */
+  private nextLeg(goal: Interaction): Interaction | null {
+    const want = this.goalDecks(goal);
+    if (want.includes(this.deck.id)) return goal;
+    const seen = new Set([this.deck.id]);
+    let frontier: { deck: string; first: Interaction | null }[] = [{ deck: this.deck.id, first: null }];
+    while (frontier.length) {
+      const next: typeof frontier = [];
+      for (const f of frontier) for (const e of this.exits(f.deck)) {
+        if (seen.has(e.to)) continue;
+        seen.add(e.to);
+        const first = f.first ?? e.via;
+        if (want.includes(e.to)) return first;
+        next.push({ deck: e.to, first });
+      }
+      frontier = next;
+    }
+    return null;
+  }
+
+  /** Start walking to an interaction, through ladders and the tunnel if needed. False if unreachable. */
+  goTo(goal: Interaction): boolean {
+    if (this.mode === "seated") this.standUp();
+    this.auto = { goal, leg: goal, path: [], i: 0 };
+    if (this.mode === "walking" && !this.planLeg()) { this.auto = null; return false; }
+    return true;
+  }
+
+  private planLeg(): boolean {
+    const a = this.auto!;
+    const leg = this.nextLeg(a.goal);
+    const spot = leg && this.goalSpot(leg, this.deck.id);
+    if (!leg || !spot) return false;
+    const path = this.findPath(this.pos.x, this.pos.z, spot[0], spot[1]);
+    if (!path) return false;
+    a.leg = leg;
+    a.path = path;
+    a.i = 0;
+    return true;
+  }
+
+  /** Free floor cells of a deck for the crew capsule (standing height), 5 cm grid. */
+  private grid(deck: Deck) {
+    let g = this.grids.get(deck.id);
+    if (g) return g;
+    const step = 0.05;
+    const x0 = Math.min(...deck.rects.map((r) => r.x0)), x1 = Math.max(...deck.rects.map((r) => r.x1));
+    const z0 = Math.min(...deck.rects.map((r) => r.z0)), z1 = Math.max(...deck.rects.map((r) => r.z1));
+    const nx = Math.round((x1 - x0) / step) + 1, nz = Math.round((z1 - z0) / step) + 1;
+    const ok = new Uint8Array(nx * nz);
+    const r = this.nav.radius;
+    const feet = deck.y, head = deck.y + this.nav.eyeStand + 0.12;
+    const obs = this.nav.obstacles.filter((o) => o.max[1] > feet + STEP_OVER && o.min[1] < head);
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+      const x = x0 + i * step, z = z0 + j * step;
+      if (!deck.rects.some((q) => x >= q.x0 - 1e-6 && x <= q.x1 + 1e-6 && z >= q.z0 - 1e-6 && z <= q.z1 + 1e-6)) continue;
+      const blocked = obs.some((o) => {
+        const cx = Math.max(o.min[0], Math.min(o.max[0], x)), cz = Math.max(o.min[2], Math.min(o.max[2], z));
+        return (x - cx) ** 2 + (z - cz) ** 2 < (r - 0.005) ** 2;
+      });
+      if (!blocked) ok[j * nx + i] = 1;
+    }
+    g = { x0, z0, nx, nz, ok };
+    this.grids.set(deck.id, g);
+    return g;
+  }
+
+  /** Shortest walkable path on the current deck (A* on the grid, then shortcut by line of sight). */
+  findPath(sx: number, sz: number, tx: number, tz: number): [number, number][] | null {
+    const g = this.grid(this.deck);
+    const step = 0.05;
+    const cell = (x: number, z: number) => {
+      const i = Math.max(0, Math.min(g.nx - 1, Math.round((x - g.x0) / step)));
+      const j = Math.max(0, Math.min(g.nz - 1, Math.round((z - g.z0) / step)));
+      if (g.ok[j * g.nx + i]) return j * g.nx + i;
+      let best = -1, bd = Infinity; // nearest free cell
+      for (let dj = -8; dj <= 8; dj++) for (let di = -8; di <= 8; di++) {
+        const ii = i + di, jj = j + dj;
+        if (ii < 0 || jj < 0 || ii >= g.nx || jj >= g.nz || !g.ok[jj * g.nx + ii]) continue;
+        const d = di * di + dj * dj;
+        if (d < bd) { bd = d; best = jj * g.nx + ii; }
+      }
+      return best;
+    };
+    const s = cell(sx, sz), t = cell(tx, tz);
+    if (s < 0 || t < 0) return null;
+    const n = g.nx * g.nz;
+    const cost = new Float32Array(n).fill(Infinity), from = new Int32Array(n).fill(-1);
+    const open: number[] = [s];
+    const h = (k: number) => Math.hypot((k % g.nx) - (t % g.nx), Math.floor(k / g.nx) - Math.floor(t / g.nx));
+    const f = new Float32Array(n).fill(Infinity);
+    cost[s] = 0;
+    f[s] = h(s);
+    const closed = new Uint8Array(n);
+    while (open.length) {
+      let bi = 0;
+      for (let k = 1; k < open.length; k++) if (f[open[k]] < f[open[bi]]) bi = k;
+      const c = open[bi];
+      open[bi] = open[open.length - 1];
+      open.pop();
+      if (c === t) break;
+      if (closed[c]) continue;
+      closed[c] = 1;
+      const ci = c % g.nx, cj = Math.floor(c / g.nx);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        if (!di && !dj) continue;
+        const ii = ci + di, jj = cj + dj;
+        if (ii < 0 || jj < 0 || ii >= g.nx || jj >= g.nz) continue;
+        const k = jj * g.nx + ii;
+        if (!g.ok[k] || closed[k]) continue;
+        if (di && dj && (!g.ok[cj * g.nx + ii] || !g.ok[jj * g.nx + ci])) continue;
+        const nc = cost[c] + (di && dj ? Math.SQRT2 : 1);
+        if (nc < cost[k]) { cost[k] = nc; from[k] = c; f[k] = nc + h(k); open.push(k); }
+      }
+    }
+    if (s !== t && from[t] < 0) return null;
+    const cells: number[] = [];
+    for (let k = t; k >= 0; k = k === s ? -1 : from[k]) cells.push(k);
+    cells.reverse();
+    const pt = (k: number): [number, number] => [g.x0 + (k % g.nx) * step, g.z0 + Math.floor(k / g.nx) * step];
+    const free = (a: [number, number], b: [number, number]) => {
+      const m = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.02);
+      for (let q = 0; q <= m; q++) {
+        const x = a[0] + ((b[0] - a[0]) * q) / Math.max(1, m), z = a[1] + ((b[1] - a[1]) * q) / Math.max(1, m);
+        const i = Math.round((x - g.x0) / step), j = Math.round((z - g.z0) / step);
+        if (i < 0 || j < 0 || i >= g.nx || j >= g.nz || !g.ok[j * g.nx + i]) return false;
+      }
+      return true;
+    };
+    const out: [number, number][] = [];
+    let a = 0;
+    while (a < cells.length - 1) {
+      let b = cells.length - 1;
+      while (b > a + 1 && !free(pt(cells[a]), pt(cells[b]))) b--;
+      out.push(pt(cells[b]));
+      a = b;
+    }
+    out.push([tx, tz]); // exact goal point (it may sit a little inside the inflated grid)
+    return out;
+  }
+
+  /** Auto-walk step; returns the move input to apply this frame. */
+  private autoStep(dt: number): MoveInput | null {
+    const a = this.auto;
+    if (!a) return null;
+    if (this.mode === "tunnel") return { forward: 1, strafe: 0, run: true, crouch: false };
+    if (this.mode !== "walking") return null;
+    if (!a.path.length && !this.planLeg()) { this.auto = null; return null; }
+    const [x, z] = a.path[a.i];
+    const dx = x - this.pos.x, dz = z - this.pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 0.06) {
+      if (a.i < a.path.length - 1) { a.i++; return this.autoStep(dt); }
+      const leg = a.leg;
+      const done = leg === a.goal;
+      a.path = [];
+      if (leg.kind === "seat") { this.auto = null; this.sit(leg.seat.name); this.yaw = 0; }
+      else if (leg.kind === "ladder") { if (done) this.auto = null; this.useLadder(leg.ladder); }
+      else { if (done) this.auto = null; this.useTunnel(leg.tunnel, leg.end); }
+      return null;
+    }
+    // turn the view toward the direction of travel, move straight at the waypoint
+    const want = Math.atan2(-dx, -dz);
+    const err = Math.atan2(Math.sin(want - this.yaw), Math.cos(want - this.yaw));
+    this.yaw += Math.max(-4 * dt, Math.min(4 * dt, err));
+    this.pitch *= Math.max(0, 1 - 3 * dt);
+    const step = Math.min(dist, WALK * dt);
+    const n = Math.max(1, Math.ceil(step / 0.04));
+    for (let i = 0; i < n; i++) {
+      this.pos.x += (dx / dist) * (step / n);
+      this.pos.z += (dz / dist) * (step / n);
+      this.pushOutOfObstacles(this.pos);
+      this.clampToDeck(this.pos);
+    }
+    return { forward: 0, strafe: 0, run: false, crouch: false };
+  }
+
   ceilingAt(x: number, z: number): number {
     const g = this.deck.ceiling;
     const fx = Math.max(0, Math.min(g.nx - 1.001, (x - g.x0) / g.step));
@@ -213,10 +425,15 @@ export class Crew {
   }
 
   update(dt: number, input: MoveInput) {
+    if (input.forward || input.strafe) this.auto = null;
+    const auto = this.autoStep(dt);
+    if (auto) input = auto;
     if (this.mode === "tunnel" && this.tunnel) {
       const tn = this.tunnel;
-      tn.s += tn.dir * input.forward * TROLLEY * (input.run ? 1.6 : 1) * dt;
-      if (tn.s <= 0 || tn.s >= tn.length) {
+      const v = tn.dir * input.forward * TROLLEY * (input.run ? 1.6 : 1) * dt;
+      tn.s += v;
+      // leave only by pulling out past an end (entering puts the crew member at the end itself)
+      if ((tn.s <= 0 && v < 0) || (tn.s >= tn.length && v > 0)) {
         const end = tn.t.ends[tn.s <= 0 ? 0 : 1];
         this.deck = this.deckById(end.deck);
         this.pos.set(end.stand[0], this.deck.y, end.stand[2]);
@@ -224,6 +441,7 @@ export class Crew {
         this.tunnel = null;
         this.mode = "walking";
       }
+      if (this.tunnel) tn.s = Math.max(0, Math.min(tn.length, tn.s));
       return;
     }
     if (this.mode === "climbing" && this.climb) {
@@ -241,6 +459,7 @@ export class Crew {
       return;
     }
     if (this.mode !== "walking") return;
+    if (auto) { this.settleEye(dt, input); return; }
     const speed = input.run ? RUN : WALK;
     const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw); // forward on the deck plane
     const rx = Math.cos(this.yaw), rz = -Math.sin(this.yaw);
@@ -255,6 +474,10 @@ export class Crew {
       this.pushOutOfObstacles(this.pos);
       this.clampToDeck(this.pos);
     }
+    this.settleEye(dt, input);
+  }
+
+  private settleEye(dt: number, input: MoveInput) {
     this.pos.y = this.deck.y;
     const want = input.crouch ? this.nav.eyeCrouch : this.nav.eyeStand;
     const room = this.ceilingAt(this.pos.x, this.pos.z) - this.deck.y - HEAD_CLEAR;

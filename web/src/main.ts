@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Aircraft, defaultAircraftState, loadGltf } from "./aircraft";
 import { Cockpit, type Pickable } from "./cockpit";
-import { Crew, type NavData } from "./crew";
+import { Crew, type Interaction, type NavData } from "./crew";
 import { DamageFX } from "./damagefx";
 import { Flak } from "./flak";
 import { Engineer, engineWarnings } from "./engineer";
@@ -12,7 +12,13 @@ import { Autopilot } from "./sim/autopilot";
 import { bearingTo, mountDisplays, NavChart, RadarScope, WAYPOINTS } from "./stations";
 import { FlightModel } from "./sim/flightmodel";
 import { BombSystem } from "./weapons/bombs";
-import { findTurrets, GUN, lineHitsAirframe, Rounds, type Turret } from "./weapons/turrets";
+import { findTurrets, Rounds, type Turret } from "./weapons/turrets";
+import { clockCall, Fighters } from "./weapons/fighters";
+import { DefensiveFire } from "./weapons/gunnery";
+import { GunSight } from "./gunsight";
+import { Sound } from "./audio";
+import { ChaseCam } from "./chasecam";
+import { Instructor } from "./sim/instructor";
 import { World } from "./world";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
@@ -30,6 +36,7 @@ const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerH
 const world = new World(scene, renderer);
 
 const hud = document.getElementById("hud")!;
+hud.style.zIndex = "3";
 const help = document.getElementById("help")!;
 const label = document.getElementById("label")!;
 const yokeDot = document.getElementById("yoke")!;
@@ -77,9 +84,22 @@ let noseGuns = false; // radar observer seat: nose turret control instead of the
 let firing = false;
 let turrets = new Map<string, Turret>();
 let rounds: Rounds | null = null;
-let interrupted = false;
+let fighters: Fighters | null = null;
+let defense: DefensiveFire | null = null;
+const gunsight = new GunSight();
+const chase = new ChaseCam();
+const instructor = new Instructor();
+let mouseAim = true; // third-person pilot: instructor flies toward the mouse aim
+const GUN_CHASE = { dist: 62, lift: 0.22, fov: 60 };
+const sound = new Sound();
+/** Fighter scenario: waves left to send and the countdown to the next one. */
+const raid = { waves: 0, next: -1, quiet: 0 };
+let calloutT = 0;
+let frameDt = 1 / 60;
+const prevRoot = new THREE.Vector3();
 let trolley: THREE.Object3D | null = null;
 const headlamp = new THREE.PointLight(0xfff0d0, 0.9, 4, 1.5);
+let lastSeat: unknown = null;
 let crewMsg = "";
 let crewMsgT = 0;
 function say(msg: string) {
@@ -92,7 +112,7 @@ const input = new KeyboardInput();
 const aircraftRoot = new THREE.Group();
 scene.add(aircraftRoot);
 
-type View = "inside" | "outside";
+type View = "inside" | "outside" | "chase";
 let view: View = "inside";
 const head = { fov: 62 };
 let crew: Crew | null = null;
@@ -122,6 +142,7 @@ function resetOnRunway(cold = false) {
   addTurretComponents();
   fm.feAuto = fm.fuel.auto = !atStation("flight_engineer");
   fm.placeOnGround(new THREE.Vector3(0, 0, 0), 0);
+  clearFighters();
   const c = fm.controls;
   c.throttle.fill(0);
   c.jetThrottle.fill(0);
@@ -137,16 +158,58 @@ function setView(v: View) {
     camera.near = 0.5;
     orbit = new OrbitControls(camera, renderer.domElement);
     orbit.enableDamping = true;
+    debugHook.orbit = orbit;
     orbit.target.copy(aircraftRoot.position);
     camera.position.copy(aircraftRoot.position).add(new THREE.Vector3(-55, 18, 45));
     camera.fov = 45;
+  } else if (v === "chase") {
+    orbit?.dispose();
+    orbit = null;
+    camera.near = 0.5;
+    camera.fov = 55;
+    chase.resetTo(fm.quat);
+    instructor.reset(fm);
   } else {
     orbit?.dispose();
     orbit = null;
     camera.near = 0.03;
     camera.fov = head.fov;
   }
+  if (v !== "chase") chase.hide();
   camera.updateProjectionMatrix();
+}
+
+/** Inside the aircraft, in the cockpit view or third person from a station. */
+const aboard = () => view === "inside" || view === "chase";
+
+function clearFighters() {
+  fighters?.clear();
+  rounds?.clear();
+  raid.waves = 0;
+  raid.next = -1;
+  for (const t of turrets.values()) { t.rearm(); if (t.retract > 0) t.extendCmd = false; }
+  gunsight.kills = 0;
+}
+
+/** Fighter attack: airborne at 25,000 ft on autopilot, three waves of MiG-15s; man a gun station (Tab). */
+function startFighterAttack() {
+  bombs?.reload();
+  fm.setMass(MASS0);
+  fm.resetSystems(true);
+  fx?.reset();
+  addTurretComponents();
+  clearFighters();
+  fm.placeInFlight(25_000 * 0.3048, 105, 0);
+  fm.controls.throttle.fill(0.8);
+  fm.controls.jetThrottle.fill(0);
+  fm.controls.flaps = 0;
+  fm.flapPos = 0;
+  fm.controls.gearDown = false;
+  fm.gearPos = 0;
+  ap.engage(fm);
+  raid.waves = 3;
+  raid.next = 4;
+  say("FIGHTER ATTACK: MiG-15s inbound, 25,000 ft. Tab: walk to a gun station (gunners in the blisters and the tail).");
 }
 
 /** Airborne on the bombing run: 15 km south of the range, 12,000 ft, heading north, autopilot on. */
@@ -163,23 +226,26 @@ function startBombRun() {
   fm.controls.flaps = 0;
   fm.flapPos = 0;
   ap.engage(fm);
-  say("BOMB RUN: autopilot on, 15 km to the target. Go to the radar observer's seat on the lower deck.");
+  clearFighters();
+  raid.waves = 1;
+  raid.next = 25; // interceptors arrive on the run in
+  say("BOMB RUN: autopilot on, 15 km to the target. Go to the radar observer's seat on the lower deck. Expect fighters.");
 }
 
 function atStation(station: string) {
-  return view === "inside" && crew?.mode === "seated" && crew.seat?.station === station;
+  return aboard() && crew?.mode === "seated" && crew.seat?.station === station;
 }
 
 /** The gun sight in use, if the crew member is at a gunnery station. */
 function gunSight() {
-  if (view !== "inside" || crew?.mode !== "seated" || !crew.seat?.sight) return null;
+  if (!aboard() || crew?.mode !== "seated" || !crew.seat?.sight) return null;
   if (crew.seat.station === "radar_observer" && !noseGuns) return null;
   return crew.seat.sight;
 }
 
 /** Flight inputs reach the sim only from a pilot seat. */
 function flying() {
-  return view === "inside" && crew?.mode === "seated" && !!crew.seat?.flies;
+  return aboard() && crew?.mode === "seated" && !!crew.seat?.flies;
 }
 
 // Model files; the hosted build overrides these with JSON-embedded variants (see web/artifact/build.sh).
@@ -193,6 +259,10 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
   turrets = findTurrets(ext);
   rounds = new Rounds(world.group);
   rounds.onGround = (p) => range!.strafe(p);
+  fighters = new Fighters(world.group);
+  defense = new DefensiveFire(turrets, aircraftRoot, rounds, fighters);
+  rounds.onSegment = (a, b, tag) => fighters!.struck(a, b, tag, frameDt);
+  setupFighterEvents();
   trolley = int.getObjectByName("Tunnel_Trolley") ?? null;
   mountDisplays(int, chart, scope);
   fx = new DamageFX(world.group, aircraftRoot, ext);
@@ -204,7 +274,7 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
   };
   debugHook.flak = flak;
   debugHook.fx = fx;
-  Object.assign(debugHook, { bombs, range, ap, aircraftRoot, world, turrets, rounds });
+  Object.assign(debugHook, { bombs, range, ap, aircraftRoot, world, turrets, rounds, fighters, defense, gunsight, raid, startFighterAttack });
   crew = new Crew(nav);
   crew.sit("Seat_AC");
   debugHook.crew = crew;
@@ -258,18 +328,35 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     const pressedList = input.takePressed();
     const pressed = new Set(pressedList);
     const cr = crew!;
-    if (pressed.has("KeyC")) setView(view === "inside" ? "outside" : "inside");
-    if (view === "inside" && pressed.has("KeyX") && cr.mode === "seated") cr.standUp();
+    if (pressed.has("KeyC")) {
+      // from a pilot or gun station C toggles third person; elsewhere the free outside camera
+      const thirdOk = cr.mode === "seated" && (!!cr.seat?.flies || !!gunSight());
+      setView(view !== "inside" ? "inside" : thirdOk ? "chase" : "outside");
+      if (view === "chase") say(cr.seat?.flies ? "THIRD PERSON: the mouse aims, the aircraft follows (click to capture the mouse; W/S/A/D override; M mouse aim on/off; C cockpit)"
+        : "THIRD PERSON GUNNER: the mouse aims, hold left button or Space to fire, wheel sets range; C back to the sight");
+    }
+    if (view === "chase" && (cr.mode !== "seated" || (!cr.seat?.flies && !gunSight()))) setView("inside");
+    if (aboard() && pressed.has("KeyX") && cr.mode === "seated") { cr.standUp(); if (view === "chase") setView("inside"); }
     if (view === "inside" && pressed.has("KeyE") && cr.mode === "walking") {
       const it = cr.nearestInteraction();
-      if (it?.kind === "seat") {
-        cr.sit(it.seat.name);
-        if (it.seat.sight && it.seat.station !== "radar_observer") { cr.yaw = 0; cr.pitch = it.seat.station.includes("lower") ? -0.35 : 0.1; }
-        if (it.seat.station === "navigator") { cr.yaw = 0; cr.pitch = -0.75; }
-        if (it.seat.station === "radar_observer") { cr.yaw = 0; cr.pitch = -0.45; }
-      } else if (it?.kind === "ladder") cr.useLadder(it.ladder);
+      if (it?.kind === "seat") cr.sit(it.seat.name);
+      else if (it?.kind === "ladder") cr.useLadder(it.ladder);
       else if (it?.kind === "tunnel") cr.useTunnel(it.tunnel, it.end);
     }
+    if (pressed.has("Tab") && view === "inside") toggleStations();
+    // just sat down (E, click or walked there): look where the station works
+    if (cr.mode === "seated" && cr.seat && cr.seat !== lastSeat) {
+      const st = cr.seat.station;
+      cr.yaw = 0;
+      if (cr.seat.sight && st !== "radar_observer") {
+        cr.pitch = st.includes("lower") ? -0.35 : 0.1;
+        head.fov = 45; // reflector sight: narrower view (Shift+wheel zooms)
+      }
+      if (st === "navigator") cr.pitch = -0.75;
+      if (st === "radar_observer") cr.pitch = -0.45;
+    }
+    if (lastSeat && (lastSeat as { sight?: unknown }).sight && (cr.mode !== "seated" || cr.seat !== lastSeat)) head.fov = 62;
+    lastSeat = cr.mode === "seated" ? cr.seat : null;
     if (cr.mode !== "seated") { noseGuns = false; firing = false; if (document.pointerLockElement) document.exitPointerLock(); }
     const gs = gunSight();
     if (atStation("radar_observer") && pressed.has("KeyT")) { noseGuns = !noseGuns; sightView = false; cr.yaw = 0; cr.pitch = -0.1; }
@@ -282,7 +369,7 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     if (pressed.has("KeyR")) resetOnRunway();
     if (pressed.has("KeyR+S")) { resetOnRunway(true); say("COLD AND DARK: engines off. Start them from the flight engineer's seat (behind the right pilot)."); }
     // flight engineer: sitting down takes over from the automatic engineer
-    const station = cr.mode === "seated" && view === "inside" ? cr.seat?.station ?? "" : "";
+    const station = cr.mode === "seated" && aboard() ? cr.seat?.station ?? "" : "";
     if (station !== lastStation) {
       if (station === "flight_engineer") {
         fm.feAuto = false;
@@ -329,6 +416,8 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     }
     if ((bigDisplay === "chart" && station !== "navigator") || (bigDisplay === "scope" && (station !== "radar_observer" || noseGuns))) bigDisplay = null;
     if (pressed.has("KeyN")) startBombRun();
+    if (pressed.has("KeyL")) startFighterAttack();
+    if (gs && pressed.has("KeyG") && !gs.aft) { gunsight.assist = !gunsight.assist; say(gunsight.assist ? "RANGE ASSIST ON (game aid: the ring frames the nearest fighter)" : "MANUAL RANGING"); }
     // autopilot: Z from the pilot seats or the bombardier; yoke input disengages it
     if (pressed.has("KeyZ") && (flying() || atStation("radar_observer"))) {
       if (ap.engaged) ap.disengage();
@@ -365,8 +454,15 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       showHud = !showHud;
       help.style.display = showHud ? "block" : "none";
     }
-    if (flying()) input.apply(fm.controls, dt, pressedList);
-    else input.neutral(fm.controls, dt);
+    if (flying()) {
+      input.apply(fm.controls, dt, pressedList);
+      if (view === "chase") {
+        if (pressed.has("KeyM")) { mouseAim = !mouseAim; instructor.reset(fm); say(mouseAim ? "MOUSE AIM ON" : "MOUSE AIM OFF: direct controls"); }
+        const keys = ["KeyW", "KeyS", "KeyA", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].some((k) => input.isDown(k));
+        if (mouseAim && !ap.engaged && !keys) instructor.update(fm, dt, chase.aimDir());
+        else if (keys) { chase.resetTo(fm.quat); instructor.reset(fm); } // keys override; the aim follows the nose
+      }
+    } else input.neutral(fm.controls, dt);
     if (view === "inside" && cr.mode !== "seated") {
       const k = (...codes: string[]) => codes.some((c) => input.isDown(c));
       cr.update(dt, {
@@ -384,34 +480,34 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       flak.update(fm, STEP);
       acc -= STEP;
     }
+    // aircraft pose with floating origin (CG at x = z = 0) before anything is placed relative to it
+    {
+      const off = fm.modelOffset.applyQuaternion(fm.quat);
+      aircraftRoot.position.set(off.x, fm.pos.y + off.y, off.z);
+      aircraftRoot.quaternion.copy(fm.quat);
+    }
     aircraftRoot.updateMatrixWorld(true);
     bombs?.update(fm, aircraftRoot.matrixWorld, dt);
-    // turrets: the station's sight sets the aim point (parallax-corrected at 700 m)
+    frameDt = dt;
+    updateRaid(dt);
+    fighters?.update(fm, dt);
+    // turrets: the manned station follows the computing sight, AI gunners man the rest
     const sightNow = gunSight();
-    let aimPoint: THREE.Vector3 | null = null;
-    if (sightNow && cr.seat) {
-      const eyeS = new THREE.Vector3(...sightNow.eye).applyMatrix4(aircraftRoot.matrixWorld);
-      const q = aircraftRoot.quaternion.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(cr.pitch, cr.seat.yaw + cr.yaw, 0, "YXZ")));
-      aimPoint = eyeS.addScaledVector(new THREE.Vector3(0, 0, -1).applyQuaternion(q), 700);
-    }
-    interrupted = false;
     const fireNow = firing || (sightNow !== null && input.isDown("Space"));
-    for (const t of turrets.values()) {
-      const controlled = !!sightNow && sightNow.turrets.includes(t.name);
-      t.update(dt, controlled && aimPoint ? t.solve(aimPoint) : null);
-      const tc = fm.damage.byId.get(t.name);
-      if (!controlled || !fireNow || (tc && tc.hp <= 0)) { t.resetCooldown(); continue; }
-      const inv = aircraftRoot.quaternion.clone().invert();
-      for (const shot of t.fire(dt)) {
-        const om = aircraftRoot.worldToLocal(shot.pos.clone());
-        if (lineHitsAirframe(om, shot.dir.clone().applyQuaternion(inv))) { interrupted = true; t.ammo++; continue; }
-        const spread = new THREE.Vector3((Math.random() - 0.5) * 0.004, (Math.random() - 0.5) * 0.004, (Math.random() - 0.5) * 0.004);
-        const abs = shot.pos.clone();
-        abs.x += fm.pos.x;
-        abs.z += fm.pos.z;
-        rounds!.spawn(abs, fm.vel.clone().addScaledVector(shot.dir.clone().add(spread).normalize(), GUN.muzzle));
+    let aimFor: ((t: Turret, pivotW: THREE.Vector3) => THREE.Vector3 | null) | null = null;
+    if (sightNow && cr.seat) {
+      const q = aircraftRoot.quaternion;
+      const eyeW = new THREE.Vector3(...sightNow.eye).applyMatrix4(aircraftRoot.matrixWorld).add(new THREE.Vector3(fm.pos.x, 0, fm.pos.z));
+      let dirW = new THREE.Vector3(0, 0, -1).applyQuaternion(q.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(cr.pitch, cr.seat.yaw + cr.yaw, 0, "YXZ"))));
+      if (view === "chase") {
+        // third person: the crosshair is on the camera's axis; lay the sight line through that point
+        const cam = new THREE.Vector3(fm.pos.x, fm.pos.y, fm.pos.z).addScaledVector(dirW, -GUN_CHASE.dist).add(new THREE.Vector3(0, GUN_CHASE.dist * GUN_CHASE.lift, 0));
+        dirW = cam.addScaledVector(dirW, gunsight.range).sub(eyeW).normalize();
       }
-    }
+      aimFor = gunsight.compute(dt, fm, q, eyeW, dirW, fighters, !!sightNow.aft);
+    } else gunsight.reset();
+    defense?.update(fm, dt, sightNow ? { turrets: sightNow.turrets, aimFor, fire: fireNow } : null);
+    weaponEffects(dt, cr);
     rounds?.update(dt);
     fx?.update(fm, dt, window.innerHeight / (2 * Math.tan((camera.fov * Math.PI) / 360)));
     const ev = fm.damage.events[0];
@@ -439,11 +535,8 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     chart.canvas.style.display = bigDisplay === "chart" ? "block" : "none";
     scope.canvas.style.display = bigDisplay === "scope" ? "block" : "none";
 
-    // Aircraft pose with floating origin: CG stays at x = z = 0.
-    const off = fm.modelOffset.applyQuaternion(fm.quat);
-    const prev = aircraftRoot.position.clone();
-    aircraftRoot.position.set(off.x, fm.pos.y + off.y, off.z);
-    aircraftRoot.quaternion.copy(fm.quat);
+    const prev = prevRoot.clone();
+    prevRoot.copy(aircraftRoot.position);
     world.follow(fm.pos);
     // cabin environment follows the aircraft attitude (world direction -> model direction)
     cabinRot.setFromQuaternion(aircraftRoot.quaternion.clone().invert());
@@ -463,7 +556,19 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     aircraft.apply(vis, dt);
     cockpit.update(fm, dt);
 
-    if (view === "inside" && sightView && bombs) {
+    if (view === "chase" && cr.seat) {
+      const cg = new THREE.Vector3(0, fm.pos.y, 0);
+      if (cr.seat.flies) {
+        const dir = chase.aimDir();
+        chase.place(camera, cg, dir);
+        chase.drawPilot(camera, cg, new THREE.Vector3(0, 0, -1).applyQuaternion(fm.quat), mouseAim && !ap.engaged);
+      } else {
+        const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(aircraftRoot.quaternion.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(cr.pitch, cr.seat.yaw + cr.yaw, 0, "YXZ"))));
+        chase.place(camera, cg, dir, GUN_CHASE.dist, GUN_CHASE.lift);
+        chase.hide();
+        if (camera.fov !== GUN_CHASE.fov) { camera.fov = GUN_CHASE.fov; camera.updateProjectionMatrix(); }
+      }
+    } else if (view === "inside" && sightView && bombs) {
       // gyro-stabilised bombsight: looks from the nose at the predicted impact point
       aircraftRoot.updateMatrixWorld(true);
       const sightPos = new THREE.Vector3(0, -1.0, 1.4 - 24.7).applyMatrix4(aircraftRoot.matrixWorld);
@@ -494,6 +599,9 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       camera.position.copy(eyeS);
       camera.up.set(0, 1, 0);
       camera.quaternion.copy(aircraftRoot.quaternion).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(cr.pitch, cr.seat.yaw + cr.yaw, 0, "YXZ")));
+      // sight vibration from the guns and from hits nearby
+      const k = 0.0012 * gunsight.shake + 0.02 * (fx?.shake ?? 0);
+      if (k > 0) camera.quaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler((Math.random() - 0.5) * k, (Math.random() - 0.5) * k, 0)));
       if (camera.fov !== head.fov) { camera.fov = head.fov; camera.updateProjectionMatrix(); }
     } else if (view === "inside") {
       if (camera.fov !== head.fov) { camera.fov = head.fov; camera.updateProjectionMatrix(); camera.up.set(0, 1, 0); }
@@ -528,7 +636,7 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
             `${bombs.armed ? "ARMED" : "SAFE"}   MODE ${bombs.mode.toUpperCase()}   HITS ${range!.destroyedCount}/${range!.targets.length}` +
             `\nO doors  K arm  M mode  Space release  V bombsight  A/D steer (autopilot)  Z autopilot`
           : "") +
-        (sightNow ? gunnerStatus(sightNow.turrets) : "") +
+        (raid.waves > 0 || (fighters?.active ?? 0) > 0 ? `\nFIGHTERS ${fighters!.active} ATTACKING   SHOT DOWN ${fighters!.kills}${raid.waves > 0 && raid.next > 0 ? `   NEXT WAVE ${raid.next.toFixed(0)} s` : ""}` : "") +
         (atStation("flight_engineer") ? engineer.status(fm) : engineWarnings(fm)) +
         (atStation("navigator") ? navStatus() : "") +
         (atStation("radar_observer") && !noseGuns ? `\nRADAR ${scope.rangeMi} MI  GAIN ${(scope.gain * 100).toFixed(0)}   B scope view  PgUp/PgDn range  [ ] gain  (yellow cross: bomb impact)` : "") +
@@ -536,7 +644,8 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
         (range && range.log.length ? `\n${range.log[0]}` : "");
     }
     yokeDot.style.display = input.mouseYoke ? "block" : "none";
-    sightEl.style.display = sightView || gunSight() ? "block" : "none";
+    sightEl.style.display = sightView ? "block" : "none";
+    drawGunsight(sightNow, fireNow);
     headlamp.visible = view === "inside" && cr.mode === "tunnel";
     if (headlamp.visible) headlamp.position.copy(eyeLocal);
     aircraftRoot.visible = !(view === "inside" && sightView); // the optic looks out through its own window
@@ -581,23 +690,142 @@ function navStatus(): string {
     "\n1 base  2 IP  3 target  (or click the chart in V view)   Enter couple autopilot   PgUp/PgDn chart scale   V chart view";
 }
 
-function gunnerStatus(names: string[]): string {
-  const ts = names.map((n) => turrets.get(n)).filter((t): t is Turret => !!t);
-  const state = ts.every((t) => t.ready) ? "READY" : ts.some((t) => t.ext > 0 && t.ext < 1) ? "MOVING" : "STOWED";
-  const ammo = ts.map((t) => `${t.name.replace("Turret_", "")} ${t.ammo}`).join("  ");
-  return `\nTURRETS ${state}   ${ammo}${interrupted ? "   FIRE INTERRUPTED (own aircraft in line)" : ""}` +
-    `\nU extend/retract  mouse aim (click to lock pointer, Esc frees it)  hold left button or Space to fire  wheel zoom${atStation("radar_observer") ? "  T bombsight" : ""}`;
+// ---------------------------------------------------------------- fighters, gunnery effects, sound
+
+const toWorldPt = (scene: THREE.Vector3) => scene.clone().add(new THREE.Vector3(fm.pos.x, 0, fm.pos.z));
+const toScenePt = (world: THREE.Vector3) => world.clone().sub(new THREE.Vector3(fm.pos.x, 0, fm.pos.z));
+const listener = () => toWorldPt(camera.getWorldPosition(new THREE.Vector3()));
+
+function gunnerFor(clock: string) {
+  const h = parseInt(clock, 10);
+  const low = clock.includes("low"), high = clock.includes("high");
+  if (h >= 5 && h <= 7) return "TAIL";
+  if (h >= 11 || h <= 1) return "NOSE";
+  if (low) return h <= 6 ? "LOWER RIGHT" : "LOWER LEFT";
+  if (h <= 4) return high ? "UPPER FORWARD RIGHT" : "RIGHT BLISTER";
+  return high ? "UPPER FORWARD LEFT" : "LEFT BLISTER";
+}
+
+function setupFighterEvents() {
+  const f = fighters!;
+  f.onFire = (ft, muzzle, gun) => {
+    fx?.fire.spawn(muzzle, ft.vel, gun === 0 ? 3 : 1.8, 4, 0.05, 1, [1.0, 0.85, 0.5]);
+    if (gun === 0 || Math.random() < 0.5) sound.enemyGun(muzzle.distanceTo(listener()), gun === 0);
+  };
+  f.onHit = (h) => {
+    const w = toWorldPt(h.pointModel.clone().applyMatrix4(aircraftRoot.matrixWorld));
+    fx?.sparks(w, fm.vel, h.big);
+    fx?.holeAlong(h.fromModel, h.pointModel, h.big);
+    const d = w.distanceTo(listener());
+    sound.hit(d, h.big);
+    if (fx && d < 14 && view === "inside") fx.shake = Math.max(fx.shake, (h.big ? 0.7 : 0.35) * (1 - d / 14));
+  };
+  f.onStruck = (ft, tag, killed) => {
+    fx?.sparks(ft.pos, ft.vel, killed);
+    if (tag === 0) gunsight.notify(killed ? "KILL" : "HIT", killed ? "#ff7050" : "#ffd27a");
+    if (killed) {
+      if (tag === 0) { gunsight.kills++; say("YOU GOT HIM! MiG going down"); }
+      else say(`${["TAIL", "UPPER AFT", "LOWER AFT", "NOSE"][Math.floor(Math.random() * 4)]} GUNNER: got one, MiG going down!`);
+    }
+  };
+  f.onExplode = (ft) => {
+    fx?.explosion(ft.pos, ft.vel);
+    sound.explosion(ft.pos.distanceTo(listener()));
+  };
+  f.onAttack = (ft) => {
+    if (calloutT > 0) return;
+    calloutT = 3;
+    const c = clockCall(fm, ft.pos);
+    say(`${gunnerFor(c)}: FIGHTER ${c.toUpperCase()}, COMING IN!`);
+  };
+}
+
+function updateRaid(dt: number) {
+  calloutT -= dt;
+  if (!fighters || fm.damage.destroyed) return;
+  if (raid.waves > 0 && raid.next > 0) {
+    raid.next -= dt;
+    if (raid.next <= 0) {
+      raid.waves--;
+      raid.next = -1;
+      raid.quiet = 0;
+      fighters.spawnWave(fm, 4);
+      const c = clockCall(fm, fighters.list[fighters.list.length - 1].pos);
+      say(`TAIL GUNNER: BANDITS, FOUR MiGs ${c.toUpperCase()}, CLOSING. GUNNERS, TURRETS OUT!`);
+    }
+  } else if (raid.next < 0 && fighters.list.length > 0 && fighters.active === 0) {
+    raid.quiet += dt;
+    if (raid.quiet > 4) {
+      fighters.clear();
+      if (raid.waves > 0) { raid.next = 25; say("ALL STATIONS: they've broken off. Reload and stay sharp, more coming."); }
+      else say(`ALL CLEAR. Fighters shot down: ${fighters.kills} (you: ${gunsight.kills}).`);
+    }
+  }
+}
+
+function weaponEffects(dt: number, cr: Crew) {
+  const ear = listener();
+  const inside = view === "inside";
+  let n = 0;
+  for (const s of defense?.shots ?? []) {
+    fx?.muzzle(s.posWorld, s.dirWorld, fm.vel, n++ % 2 === 0);
+    sound.gun(s.posWorld.distanceTo(ear), inside);
+  }
+  let near = Infinity, closing = 0;
+  for (const f of fighters?.list ?? []) {
+    if (f.smoking || f.burning) fx?.fighterTrail(f.prevPos, f.pos, f.smoking, f.burning);
+    const d = f.pos.distanceTo(ear);
+    if (d < near && f.state !== "gone") {
+      near = d;
+      closing = f.vel.clone().sub(fm.vel).dot(ear.clone().sub(f.pos).normalize());
+    }
+  }
+  const mine = gunSight()?.turrets.map((n) => turrets.get(n)).filter((t): t is Turret => !!t) ?? [];
+  const slew = mine.some((t) => t.slewing) ? 1 : mine.some((t) => t.ext > 0 && t.ext < 1) ? 0.6 : 0;
+  const power = fm.pistons.reduce((a, e, i) => a + (e.running ? 0.35 + 0.65 * fm.controls.throttle[i] : 0), 0) / 6;
+  sound.frame(cr.mode === "seated" && cr.seat?.sight ? slew : 0, near, closing, inside ? power : power * 0.5);
+  void dt;
+}
+
+function drawGunsight(sight: ReturnType<typeof gunSight>, fireNow: boolean) {
+  if (!sight || !aboard()) { gunsight.canvas.style.display = "none"; return; }
+  gunsight.canvas.style.display = "block";
+  const ts = sight.turrets.map((n) => turrets.get(n)).filter((t): t is Turret => !!t);
+  const lines: THREE.Vector3[] = [];
+  for (const t of ts) {
+    if (!t.ready) continue;
+    const p = t.pitchNode.getWorldPosition(new THREE.Vector3());
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(t.pitchNode.getWorldQuaternion(new THREE.Quaternion()));
+    lines.push(p.addScaledVector(dir, gunsight.range));
+  }
+  const firingNow = fireNow && (defense?.shots.some((s) => s.player) ?? false);
+  const name = STATION_NAMES[crew!.seat!.station] ?? crew!.seat!.station;
+  gunsight.draw(camera, ts, lines, name, firingNow, defense?.interrupted ?? false, frameDt, !!sight.aft, view === "chase");
+  if (gunsight.lock) {
+    const v = toScenePt(gunsight.lock.pos).project(camera);
+    if (v.z < 1) {
+      const size = (window.innerHeight / 2 / Math.tan((camera.fov * Math.PI) / 360)) * (5 / Math.max(50, gunsight.lock.pos.distanceTo(listener())));
+      gunsight.bracket((v.x * 0.5 + 0.5) * window.innerWidth, (-v.y * 0.5 + 0.5) * window.innerHeight, size);
+    }
+  }
 }
 
 function crewStatus(cr: Crew): string {
-  if (view !== "inside") return "OUTSIDE VIEW";
+  if (view === "outside") return "OUTSIDE VIEW   C: back aboard";
+  if (view === "chase" && cr.seat?.flies) return `THIRD PERSON   ${mouseAim ? (ap.engaged ? "AUTOPILOT ON (move the mouse to take over)" : "MOUSE AIM: the aircraft follows the circle") : "DIRECT CONTROLS"}   wheel: distance   M: mouse aim   C: cockpit`;
+  if (view === "chase") return "THIRD PERSON GUNNER   C: back to the sight";
   if (cr.mode === "seated" && cr.seat) {
     const name = STATION_NAMES[cr.seat.station] ?? cr.seat.station;
     const working = cr.seat.flies || FUNCTIONAL.has(cr.seat.station) || isGunner(cr.seat.station);
-    return `${name.toUpperCase()} SEAT   X: stand up${cr.seat.station === "radar_observer" ? "   T: nose guns / bombsight" : ""}${working ? "" : "   (station not functional yet)"}`;
+    return `${name.toUpperCase()} SEAT   X: stand up   Tab: crew stations${cr.seat.station === "radar_observer" ? "   T: nose guns / bombsight" : ""}${working ? "" : "   (station not functional yet)"}`;
   }
   if (cr.mode === "climbing") return "ON LADDER";
-  if (cr.mode === "tunnel") return "IN THE TUNNEL (on the trolley)   W / S: pull along the rope";
+  if (cr.auto) {
+    const g = cr.auto.goal;
+    const to = g.kind === "seat" ? STATION_NAMES[g.seat.station] ?? g.seat.name : g.kind === "ladder" ? "the ladder" : "the tunnel hatch";
+    return `${cr.mode === "tunnel" ? "IN THE TUNNEL, " : ""}GOING TO ${to.toUpperCase()}   (any move key: stop)`;
+  }
+  if (cr.mode === "tunnel") return "IN THE TUNNEL (on the trolley)   W / S: pull along the rope, Shift faster";
   const it = cr.nearestInteraction();
   const hint = it?.kind === "seat" ? `   E: sit (${STATION_NAMES[it.seat.station] ?? it.seat.station})`
     : it?.kind === "ladder" ? `   E: ${cr.deck.id === it.ladder.lower ? "climb up" : "climb down"}`
@@ -606,7 +834,41 @@ function crewStatus(cr: Crew): string {
   const tunnelHint = it?.kind !== "tunnel" && td < 4
     ? `   TUNNEL HATCH ${td.toFixed(1)} m ${cr.deck.id === "upper" ? "aft, on the left of the aft bulkhead" : "forward, top of the ladder"}` : "";
   const deck = cr.deck.id === "upper" ? "FLIGHT DECK" : cr.deck.id === "lower" ? "LOWER DECK" : "AFT COMPARTMENT";
-  return `WALKING, ${deck}${hint}${tunnelHint}`;
+  return `WALKING, ${deck}${hint}${tunnelHint}   Tab: crew stations`;
+}
+
+// ---------------------------------------------------------------- crew station list (Tab)
+
+const stationsEl = document.createElement("div");
+stationsEl.style.cssText = "position:fixed;left:12px;top:50%;transform:translateY(-50%);z-index:6;display:none;" +
+  "background:rgba(10,12,14,0.85);color:#eee;font:13px system-ui,sans-serif;padding:8px 0;border-radius:6px;min-width:250px;";
+document.body.appendChild(stationsEl);
+function toggleStations() {
+  const cr = crew;
+  if (!cr || stationsEl.style.display === "block") { stationsEl.style.display = "none"; return; }
+  const groups: [string, string][] = [["upper", "Flight deck"], ["lower", "Lower deck (forward compartment)"], ["aft", "Aft compartment (through the tunnel)"]];
+  stationsEl.innerHTML = '<div style="padding:2px 12px 6px;color:#ffd27a">Walk to a station (Tab closes)</div>';
+  for (const [deck, title] of groups) {
+    const h = document.createElement("div");
+    h.textContent = title;
+    h.style.cssText = "padding:6px 12px 2px;color:#9ab;font-size:11px;text-transform:uppercase;";
+    stationsEl.appendChild(h);
+    for (const seat of cr.nav.seats.filter((s) => s.deck === deck)) {
+      const row = document.createElement("div");
+      const here = cr.seat === seat;
+      row.textContent = (STATION_NAMES[seat.station] ?? seat.station) + (here ? "  (here)" : "");
+      row.style.cssText = `padding:3px 18px;cursor:pointer;${here ? "color:#888;" : ""}`;
+      row.onmouseenter = () => { row.style.background = "rgba(255,210,122,0.18)"; };
+      row.onmouseleave = () => { row.style.background = ""; };
+      row.onpointerdown = (e) => {
+        e.stopPropagation();
+        stationsEl.style.display = "none";
+        if (!here && !cr.goTo({ kind: "seat", seat })) say("No way there from here");
+      };
+      stationsEl.appendChild(row);
+    }
+  }
+  stationsEl.style.display = "block";
 }
 
 // ---------------------------------------------------------------- pointer: look, pick, drag
@@ -624,14 +886,16 @@ function setupPointer(cockpit: Cockpit) {
     ray.setFromCamera(ndc, camera);
     return ray.intersectObject(cockpit.root, true).slice(0, 4).map((h) => `${h.object.name}@${h.distance.toFixed(2)}:${cockpit.pick(h.object)?.control ?? "-"}`);
   };
+  const walkPick = (c: string) => c === "sit" || c === "ladder" || c === "tunnel";
   const pickAt = (e: PointerEvent): Pickable | null => {
     ndc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
     ray.setFromCamera(ndc, camera);
     const hits = ray.intersectObject(cockpit.root, true);
     for (const h of hits) {
-      if (h.distance > 2.5) break;
+      if (h.distance > 12) break;
       const p = cockpit.pick(h.object);
-      if (p) return p;
+      // seats, ladder and hatch can be picked across the cabin (the crew member walks there)
+      if (p && (h.distance <= 2.5 || walkPick(p.control))) return p;
       if ((h.object as THREE.Mesh).isMesh) break; // first solid surface blocks
     }
     return null;
@@ -650,12 +914,23 @@ function setupPointer(cockpit: Cockpit) {
   };
 
   document.addEventListener("mousemove", (e) => {
+    if (document.pointerLockElement === el && view === "chase" && flying()) {
+      chase.mouse(e.movementX, e.movementY, camera.fov);
+      if (ap.engaged && Math.hypot(e.movementX, e.movementY) > 2) { ap.disengage(); say("AUTOPILOT OFF (mouse aim)"); }
+      return;
+    }
     if (document.pointerLockElement === el && crew && gunSight()) {
       crew.yaw -= e.movementX * 0.0025 * (head.fov / 62);
       crew.pitch = Math.max(-1.4, Math.min(1.4, crew.pitch - e.movementY * 0.0025 * (head.fov / 62)));
     }
   });
   el.addEventListener("pointerdown", (e) => {
+    if (view === "chase" && flying() && e.button === 0) {
+      if (document.pointerLockElement !== el) {
+        try { void (el.requestPointerLock() as unknown as Promise<void> | undefined)?.catch?.(() => {}); } catch { /* not available */ }
+      }
+      return;
+    }
     if (gunSight() && e.button === 0) {
       if (document.pointerLockElement !== el) {
         try { void (el.requestPointerLock() as unknown as Promise<void> | undefined)?.catch?.(() => {}); } catch { /* not available */ }
@@ -672,20 +947,25 @@ function setupPointer(cockpit: Cockpit) {
     const p = pickAt(e);
     if (!p) return;
     const cr = crew!;
-    if (p.control === "tunnel") {
+    if (walkPick(p.control)) {
       if (cr.mode !== "walking") return;
       const it = cr.nearestInteraction();
-      if (it?.kind === "tunnel") cr.useTunnel(it.tunnel, it.end);
-      else say("Walk up to the hatch to enter the tunnel");
-      return;
-    }
-    if (p.control === "sit" || p.control === "ladder") {
-      if (cr.mode !== "walking") return;
-      const it = cr.nearestInteraction();
+      let goal: Interaction | null = null;
       if (p.control === "sit") {
         const seat = cr.nav.seats.find((s) => s.name === p.data.sit);
-        if (seat && Math.hypot(seat.stand[0] - cr.pos.x, seat.stand[2] - cr.pos.z) < 2.0) cr.sit(seat.name);
-      } else if (it?.kind === "ladder") cr.useLadder(it.ladder);
+        if (seat) goal = { kind: "seat", seat };
+      } else if (p.control === "ladder") goal = { kind: "ladder", ladder: cr.nav.ladders[0] };
+      else {
+        const t = cr.nav.tunnels[0];
+        const end = t.ends.findIndex((x) => x.deck === cr.deck.id);
+        if (end >= 0) goal = { kind: "tunnel", tunnel: t, end: end as 0 | 1 };
+      }
+      if (!goal) return;
+      const same = it && it.kind === goal.kind && (it.kind !== "seat" || (goal.kind === "seat" && it.seat === goal.seat));
+      if (same && it.kind === "seat") cr.sit(it.seat.name);
+      else if (same && it.kind === "ladder") cr.useLadder(it.ladder);
+      else if (same && it.kind === "tunnel") cr.useTunnel(it.tunnel, it.end);
+      else if (!cr.goTo(goal)) say("No way there from here");
       return;
     }
     if (!flying()) return;
@@ -746,7 +1026,6 @@ function setupPointer(cockpit: Cockpit) {
     }
     if (view === "inside") {
       let p = pickAt(e);
-      const walkPick = (c: string) => c === "sit" || c === "ladder" || c === "tunnel";
       if (p && !walkPick(p.control) && !flying()) p = null;
       if (p && walkPick(p.control) && crew?.mode !== "walking") p = null;
       el.style.cursor = p ? "pointer" : "default";
@@ -764,7 +1043,9 @@ function setupPointer(cockpit: Cockpit) {
   el.addEventListener("pointerup", end);
   el.addEventListener("pointercancel", end);
   el.addEventListener("wheel", (e) => {
-    if (view !== "inside") return;
+    if (view === "chase" && flying()) { chase.wheel(e.deltaY); return; }
+    if (!aboard()) return;
+    if (gunSight() && !e.shiftKey) { gunsight.wheel(e.deltaY); return; }
     head.fov = Math.max(25, Math.min(80, head.fov + Math.sign(e.deltaY) * 4));
     camera.fov = head.fov;
     camera.updateProjectionMatrix();

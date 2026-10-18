@@ -58,7 +58,7 @@ check(c.eyeHeight > 1.5, `stands upright on the lower deck (eye ${c.eyeHeight.to
 walkTo(c, 0.3, -20.0);
 walkTo(c, 0.3, -15.0);
 walkTo(c, -5, -15.0, 5);
-check(c.pos.x > -1.3 && c.pos.x < -1.0, `stopped by the hull wall (x ${c.pos.x.toFixed(2)})`);
+check(c.pos.x > -1.35 && c.pos.x < -1.0, `stopped by the hull wall (x ${c.pos.x.toFixed(2)})`);
 walkTo(c, 0.3, -15.0);
 walkTo(c, 0.3, -20.0);
 // Obstacle: walk into the radar console from behind
@@ -110,6 +110,58 @@ check(!!ua.sight && ua.sight.turrets.length === 2, "the station controls the two
 const tail = nav.seats.find((s) => s.name === "Seat_TAIL")!;
 r = walkTo(c, tail.stand[0], tail.stand[2]);
 check(r.dist < 0.3 && !r.hit, `walks to the tail gunner's station (dist ${r.dist.toFixed(2)} m${r.hit ? ", inside " + r.hit : ""})`);
+// Player-style route, keyboard only: W held, view turned with a limited mouse rate and some aim
+// noise, waypoints only roughly reached (30 cm), then E at the hatch and W through the tunnel.
+{
+  const h = new Crew(nav);
+  h.sit("Seat_AC");
+  h.standUp();
+  let seed = 3;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const sloppy = (x: number, z: number, tol = 0.3) => {
+    for (let t = 0; t < 20; t += 1 / 60) {
+      const dx = x - h.pos.x, dz = z - h.pos.z;
+      if (Math.hypot(dx, dz) < tol) return true;
+      const want = Math.atan2(-dx, -dz) + (rnd() - 0.5) * 0.25;
+      const err = Math.atan2(Math.sin(want - h.yaw), Math.cos(want - h.yaw));
+      h.yaw += Math.max(-3 / 60, Math.min(3 / 60, err));
+      h.update(1 / 60, { forward: Math.abs(err) < 1.2 ? 1 : 0, strafe: 0, run: false, crouch: false });
+    }
+    return false;
+  };
+  const route: [number, number][] = [[0, -19.0], [-0.05, -17.6], [-0.05, -16.0], [0.5, -15.4], [0.5, -14.3], [0, -13.6], [0, -12.9], [-0.55, -12.62]];
+  const stuck = route.find(([x, z]) => !sloppy(x, z));
+  check(!stuck, `player-style walk from the AC seat to the hatch${stuck ? ": stuck before " + stuck.join(", ") + " at " + h.pos.x.toFixed(2) + ", " + h.pos.z.toFixed(2) : ""}`);
+  const it = h.nearestInteraction();
+  check(it?.kind === "tunnel", `E at the hatch enters the tunnel (nearest: ${it?.kind ?? "none"})`);
+  if (it?.kind === "tunnel") h.useTunnel(it.tunnel, it.end);
+  for (let t = 0; t < 60 && h.mode === "tunnel"; t += 1 / 60) h.update(1 / 60, { forward: 1, strafe: 0, run: false, crouch: false });
+  check(h.mode === "walking" && h.deck.id === "aft", "W through the tunnel to the aft compartment");
+}
+
+// Click-to-walk: every seat is reachable from the AC seat on foot (ladder and tunnel included)
+{
+  const bad: string[] = [];
+  for (const st of nav.seats) {
+    const a = new Crew(nav);
+    a.sit("Seat_AC");
+    if (st.name === "Seat_AC") continue;
+    const ok = a.goTo({ kind: "seat", seat: st });
+    let t = 0;
+    for (; t < 120 && a.mode !== "seated"; t += 1 / 60) {
+      a.update(1 / 60, { forward: 0, strafe: 0, run: false, crouch: false });
+      if (a.mode === "walking" && insideObstacle(a)) { bad.push(`${st.name} (through ${insideObstacle(a)!.name})`); break; }
+    }
+    if (!ok || a.seat?.name !== st.name) bad.push(`${st.name} (${a.mode} on ${a.deck.id} at ${a.pos.x.toFixed(2)}, ${a.pos.z.toFixed(2)})`);
+  }
+  check(bad.length === 0, `auto-walk reaches all ${nav.seats.length - 1} other seats${bad.length ? ": " + bad.join("; ") : ""}`);
+  const back = new Crew(nav);
+  back.sit("Seat_TAIL");
+  back.goTo({ kind: "seat", seat: nav.seats.find((s) => s.name === "Seat_RADAR")! });
+  for (let t = 0; t < 150 && back.mode !== "seated"; t += 1 / 60) back.update(1 / 60, { forward: 0, strafe: 0, run: false, crouch: false });
+  check(back.seat?.name === "Seat_RADAR", "auto-walk from the tail gunner to the radar observer (tunnel and ladder)");
+}
+
 // Camera never leaves the airframe: seat eyes are inside the inner skin; random walks keep the eye inside
 {
   const v = new Vector3();

@@ -997,6 +997,22 @@ def span_u(semi):
     return lambda sec: 0.5 + 0.5 * sec.le.x / semi
 
 
+def seat_on_hull(mb, below=0.02):
+    """Raise vertices that lie inside the fuselage to just under the outer skin. The fin root contour
+    starts low (FIN_ROOT_Z) and would otherwise hang down into the aft crew compartment; seated this
+    way it stays hidden under the skin from outside and above the cabin lining from inside."""
+    for v in mb.verts:
+        d = P.NOSE_Y - v.y
+        if not (0.0 < d < P.LENGTH):
+            continue
+        r, zc = fus_radius(d), fus_center_z(d)
+        if abs(v.x) >= r or v.z < zc:
+            continue
+        top = zc + math.sqrt(r * r - v.x * v.x) - below
+        if v.z < top:
+            v.z = top
+
+
 def build_tail():
     # ---- Vertical fin: span along z, contour from the three-view
     le_fn, te_fn, z_top, fin_sec = FIN_LE_FN, FIN_TE_FN, FIN_Z_TOP, FIN_SECTION_FN
@@ -1013,6 +1029,7 @@ def build_tail():
         ranges.append((0, hinge_f(z)) if rng == "hinge" else rng)
     mb = MeshBuilder()
     surface(mb, secs, ranges, n=32, u_fn=fin_u, mat="skin_fin")
+    seat_on_hull(mb)
     to_object("Fin", mb)
 
     rzs = [lerp(rz0, rz1, k / 10) for k in range(11)]
