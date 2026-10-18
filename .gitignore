@@ -5,3 +5,4 @@ __pycache__/
 tools/model/renders/_*.png
 *.blend
 *.blend1
+tools/model/build_tex/

@@ -111,9 +111,17 @@ NOSE_WHEEL_R = 0.55
 BOMB_BAYS = [(13.6, 17.9), (18.1, 22.4), (26.6, 30.0), (30.2, 33.6)]
 BOMB_DOOR_HALF_ANGLE = math.radians(52)
 
-# --- canopy --- MEASURED (side + plan)
+# --- canopy --- MEASURED (side + plan). Built into the fuselage loft as a hump on the top line.
+# (d, hump height above the circular section at the top centerline)
+CANOPY_HUMP = [(2.19, 0.0), (2.40, 0.15), (2.61, 0.30), (2.82, 0.37), (3.03, 0.44), (3.35, 0.51),
+               (3.85, 0.57), (4.49, 0.43), (5.0, 0.32), (5.32, 0.22), (5.53, 0.11), (5.74, 0.0)]
+CANOPY_HALF_ANGLE = math.radians(55)  # hump fades to zero here (plan width 2.8 m)
 CANOPY_D = 3.95
-CANOPY_AXES = (1.32, 1.70, 1.06)   # half width, half length, half height
-CANOPY_Z = 1.35                    # top at 2.41
+GLAZING_D = (2.42, 5.6)               # glazed hull region
+WINDSHIELD_D = 1.95                   # crown glazing extends forward to here (front windshield panes)
+WINDSHIELD_ANGLE = math.radians(46)   # ...within this angle from the top
+GLAZING_SILL = math.radians(64)       # glazed above this angle from top (ESTIMATED from photos)
+CANOPY_ARCHES_D = [1.95, 2.42, 2.95, 3.5, 4.1, 4.75, 5.6]   # ESTIMATED from flight deck photo
+CANOPY_RIBS_DEG = [0, 20, 40, 64]                      # ESTIMATED
 
 RADOME_D = 8.1                     # MEASURED (dashed outline in plan)

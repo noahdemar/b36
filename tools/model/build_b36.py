@@ -35,6 +35,22 @@ def make_material(name, color, metallic=0.0, roughness=0.5, alpha=1.0):
 MATS = {}
 
 
+def make_texture_material(name, image_path, roughness=0.6, emission=0.0, alpha_blend=False):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    bsdf = nt.nodes["Principled BSDF"]
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = bpy.data.images.load(os.path.abspath(image_path))
+    nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    bsdf.inputs["Roughness"].default_value = roughness
+    bsdf.inputs["Metallic"].default_value = 0.0
+    if emission > 0:
+        nt.links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
+        bsdf.inputs["Emission Strength"].default_value = emission
+    return m
+
+
 def init_materials():
     MATS["alu"] = make_material("Aluminum", (0.72, 0.73, 0.75), 1.0, 0.36)
     MATS["alu_dark"] = make_material("AluminumDull", (0.55, 0.56, 0.58), 1.0, 0.48)
@@ -59,6 +75,7 @@ class MeshBuilder:
         self.verts = []
         self.faces = []
         self.face_mats = []
+        self.face_uvs = []
         self.mat_names = []
 
     def mat_index(self, key):
@@ -70,9 +87,10 @@ class MeshBuilder:
         self.verts.append(Vector(v))
         return len(self.verts) - 1
 
-    def add_face(self, idx, mat="alu"):
+    def add_face(self, idx, mat="alu", uv=None):
         self.faces.append(list(idx))
         self.face_mats.append(self.mat_index(mat))
+        self.face_uvs.append(list(uv) if uv else None)
 
     def loft(self, rings, closed=True, mat_fn=None, cap_start=False, cap_end=False, mat="alu"):
         """rings: list of lists of points (equal length). mat_fn(i, j) -> mat key for quad
@@ -111,6 +129,7 @@ class MeshBuilder:
         m = MeshBuilder()
         m.verts = [Vector((-v.x, v.y, v.z)) for v in self.verts]
         m.faces = [list(reversed(f)) for f in self.faces]
+        m.face_uvs = [list(reversed(u)) if u else None for u in self.face_uvs]
         m.face_mats = list(self.face_mats)
         m.mat_names = list(self.mat_names)
         return m
@@ -118,8 +137,18 @@ class MeshBuilder:
     def extend(self, other):
         off = len(self.verts)
         self.verts += [v.copy() for v in other.verts]
-        for f, mi in zip(other.faces, other.face_mats):
-            self.add_face([i + off for i in f], other.mat_names[mi])
+        for f, mi, uv in zip(other.faces, other.face_mats, other.face_uvs):
+            self.add_face([i + off for i in f], other.mat_names[mi], uv)
+
+    def flipped(self):
+        """Same geometry with reversed winding (normals point the other way)."""
+        m = MeshBuilder()
+        m.verts = [v.copy() for v in self.verts]
+        m.faces = [list(reversed(f)) for f in self.faces]
+        m.face_uvs = [list(reversed(u)) if u else None for u in self.face_uvs]
+        m.face_mats = list(self.face_mats)
+        m.mat_names = list(self.mat_names)
+        return m
 
 
 ROOT = None
@@ -134,6 +163,11 @@ def to_object(name, mb, frame=None, parent=None, smooth_angle=35.0, extras=None)
         me.materials.append(MATS[key])
     for poly, mi in zip(me.polygons, mb.face_mats):
         poly.material_index = mi
+    if any(mb.face_uvs):
+        layer = me.uv_layers.new(name="UVMap")
+        for poly, uv in zip(me.polygons, mb.face_uvs):
+            for k, li in enumerate(poly.loop_indices):
+                layer.data[li].uv = uv[k] if uv else (0.0, 0.0)
     me.validate()
     me.shade_smooth()
     me.set_sharp_from_angle(angle=math.radians(smooth_angle))
@@ -349,6 +383,55 @@ def fus_center_z(d):
     return FUS_Z_FN(d)
 
 
+HUMP_FN = pchip([p[0] for p in P.CANOPY_HUMP], [p[1] for p in P.CANOPY_HUMP])
+
+
+def canopy_hump(d, theta):
+    """Extra radius from the canopy at station d, angle theta from top (radians)."""
+    if not (P.CANOPY_HUMP[0][0] < d < P.CANOPY_HUMP[-1][0]):
+        return 0.0
+    theta %= 2 * math.pi
+    t = min(theta, 2 * math.pi - theta)
+    if t >= P.CANOPY_HALF_ANGLE:
+        return 0.0
+    w = math.cos(0.5 * math.pi * t / P.CANOPY_HALF_ANGLE) ** 1.5
+    return HUMP_FN(d) * w
+
+
+def hull_point(d, theta, inset=0.0):
+    """Point on the fuselage skin (including canopy) at station d, angle theta from top."""
+    r = fus_radius(d) + canopy_hump(d, theta) - inset
+    return Vector((r * math.sin(theta), fus_y(d), fus_center_z(d) + r * math.cos(theta)))
+
+
+def is_glazed(d, theta):
+    theta %= 2 * math.pi
+    t = min(theta, 2 * math.pi - theta)
+    if P.WINDSHIELD_D <= d < P.GLAZING_D[0]:
+        return t < P.WINDSHIELD_ANGLE
+    return P.GLAZING_D[0] <= d <= P.GLAZING_D[1] and t < P.GLAZING_SILL
+
+
+def canopy_frames(r_tube, inset=0.0, mat="alu_dark", seg=10):
+    """Arches and ribs centred on the glazed hull surface (visible inside and out)."""
+    mb = MeshBuilder()
+    sill = P.GLAZING_SILL
+    for d in P.CANOPY_ARCHES_D:
+        lim = P.WINDSHIELD_ANGLE if d < P.GLAZING_D[0] else sill
+        pts = [hull_point(d, t, inset) for t in [-lim + 2 * lim * k / 40 for k in range(41)]]
+        for p0, p1 in zip(pts, pts[1:]):
+            tube(mb, p0, p1, r_tube, seg=seg, mat=mat)
+    d0, d1 = P.GLAZING_D
+    for deg in P.CANOPY_RIBS_DEG:
+        for sgn in ((1,) if deg == 0 else (1, -1)):
+            t = sgn * math.radians(deg) % (2 * math.pi)
+            start = P.WINDSHIELD_D if math.radians(deg) <= P.WINDSHIELD_ANGLE else d0
+            pts = [hull_point(start + (d1 - start) * k / 30, t, inset) for k in range(31)]
+            for p0, p1 in zip(pts, pts[1:]):
+                tube(mb, p0, p1, r_tube, seg=seg, mat=mat)
+    return mb
+
+
 def build_fuselage():
     end = FUS_D[-1]
     ds = set()
@@ -361,13 +444,15 @@ def build_fuselage():
     for a, b in P.BOMB_BAYS:
         ds.add(a)
         ds.add(b)
+    for d in P.CANOPY_ARCHES_D:
+        ds.add(d)
     ds = sorted(ds)
     n = P.FUS_SEGMENTS
     thetas = [2 * math.pi * k / n for k in range(n)]
     rings = []
     for d in ds:
         r, zc = fus_radius(d), fus_center_z(d)
-        rings.append([Vector((r * math.sin(t), fus_y(d), zc + r * math.cos(t))) for t in thetas])
+        rings.append([hull_point(d, t) for t in thetas])
 
     hull = MeshBuilder()
     doors = {}
@@ -380,6 +465,8 @@ def build_fuselage():
             if a <= dm <= b and from_bottom < P.BOMB_DOOR_HALF_ANGLE:
                 return ("door", bi, "R" if tm < math.pi else "L")
         from_top = min(tm, 2 * math.pi - tm)
+        if is_glazed(dm, tm):
+            return "glass"
         if dm < 1.45 and from_top > math.radians(58):
             return "glass"
         if dm < 1.45:
@@ -419,41 +506,7 @@ def build_fuselage():
                   extras={"part": "bombdoor", "bay": bi + 1, "side": side,
                           "axis": gltf_axis((0, 1, 0)), "open_angle": math.radians(75) * (-1 if side == "R" else 1)})
 
-    # Canopy blister
-    mb = MeshBuilder()
-    cy = fus_y(P.CANOPY_D)
-    ellipsoid(mb, (0, cy, P.CANOPY_Z), P.CANOPY_AXES, seg=40, rings_n=24)
-    to_object("Canopy", mb)
-    # Canopy frames: arches + spine
-    mb = MeshBuilder()
-    ax, ay, az = P.CANOPY_AXES
-    for t in (-0.7, -0.45, -0.2, 0.05, 0.3, 0.55, 0.78):
-        y = cy + ay * t
-        k = math.sqrt(max(1 - t * t, 0))
-        pts = []
-        for a in range(0, 181, 12):
-            ang = math.radians(a)
-            pts.append(Vector((ax * k * math.cos(ang) * 1.01, y, P.CANOPY_Z + az * k * math.sin(ang) * 1.01)))
-        rr = fus_radius(P.CANOPY_D)
-        pts = [p for p in pts if p.z > math.sqrt(max(rr * rr - p.x * p.x, 0)) - 0.05]
-        for p0, p1 in zip(pts, pts[1:]):
-            tube(mb, p0, p1, 0.03, seg=6, mat="alu_dark")
-    spine = []
-    for t in [x / 10 for x in range(-8, 9)]:
-        spine.append(Vector((0, cy + ay * t, P.CANOPY_Z + az * math.sqrt(1 - t * t) * 1.01)))
-    for p0, p1 in zip(spine, spine[1:]):
-        tube(mb, p0, p1, 0.035, seg=6, mat="alu_dark")
-    for phi in (32, 62, 118, 148):
-        a = math.radians(phi)
-        line = []
-        for t in [x / 12 for x in range(-11, 12)]:
-            k = math.sqrt(1 - t * t)
-            line.append(Vector((ax * k * math.cos(a) * 1.01, cy + ay * t, P.CANOPY_Z + az * k * math.sin(a) * 1.01)))
-        rr = fus_radius(P.CANOPY_D)
-        line = [p for p in line if p.z > math.sqrt(max(rr * rr - p.x * p.x, 0)) - 0.05]
-        for p0, p1 in zip(line, line[1:]):
-            tube(mb, p0, p1, 0.028, seg=6, mat="alu_dark")
-    to_object("CanopyFrame", mb)
+    to_object("CanopyFrame", canopy_frames(0.03, inset=-0.012))
 
     # Nose glazing frames
     mb = MeshBuilder()
