@@ -1,0 +1,7 @@
+node_modules/
+web/dist/
+.venv/
+__pycache__/
+tools/model/renders/_*.png
+*.blend
+*.blend1
