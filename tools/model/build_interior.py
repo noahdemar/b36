@@ -762,19 +762,22 @@ def build_engineer(uv):
     mb = MeshBuilder()
     polygon_plate(mb, f, pts, 0.04, "panel")
     to_object("Int_FE_Panel", mb)
-    gauges = ["rpm", "manp", "jet_oil", "jet_fuel", "jet_egt", "rpm"]
-    n = 0
-    for row in range(5):
+    # Engine instruments: one column per engine, ordered like the engines on the wing (the FE faces aft,
+    # so engine 1 is at the right as seen; arrangement ESTIMATED),
+    # rows rpm, manifold pressure, cylinder head temperature, oil temperature, fuel flow.
+    rows = [("rpm", "rpm"), ("manp", "map"), ("cht", "cht"), ("oilt", "oilt"), ("ff", "ff")]
+    for row, (kind, field) in enumerate(rows):
         for col in range(6):
-            x = 0.12 + 0.17 * col
-            z = 1.72 - 0.17 * row
-            top = B.fus_center_z(d) + math.sqrt(max((B.fus_radius(d) - 0.2) ** 2 - (x + 0.05) ** 2, 0))
-            if z + 0.07 > top:
-                continue
-            kind = gauges[(row + col) % len(gauges)]
-            fa = f @ Matrix.Translation((-x, z, 0))
-            build_instrument(f"FE_{n:02d}", kind, fa, 0.055, uv, depth=0.03)
-            n += 1
+            x = 0.10 + 0.135 * col
+            z = 1.36 - 0.125 * row
+            name = f"FE_E{col + 1}_{kind}"
+            build_instrument(name, kind, f @ Matrix.Translation((-x, z, 0)), 0.05, uv, depth=0.03)
+            bpy.data.objects[f"{name}_Needle0"]["source"] = f"eng{col + 1}_{field}"
+    # Fuel quantity, left and right manifolds
+    for k, side in enumerate("LR"):
+        name = f"FE_Fuel{side}"
+        build_instrument(name, "fuelq", f @ Matrix.Translation((-1.02, 1.12 - 0.17 * k, 0)), 0.065, uv, depth=0.03)
+        bpy.data.objects[f"{name}_Needle0"]["source"] = f"fuel_{side}"
     mb = MeshBuilder()
     wbox(mb, 0.05, 1.35, d - 0.45, d, 0.74, 0.79, "panel")   # desk
     to_object("Int_FE_Desk", mb)

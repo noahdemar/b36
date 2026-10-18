@@ -20,6 +20,7 @@ const TARGETS = {
 
 function thrustAvailable(fm: FlightModel, altM: number, V: number, jets: boolean) {
   fm.pos.y = altM;
+  fm.resetSystems(true); // fresh fuel and engines for each sample (the sweep would otherwise burn it all)
   fm.controls.throttle.fill(1);
   fm.controls.jetThrottle.fill(jets ? 1 : 0);
   fm.vel.set(0, 0, -V);

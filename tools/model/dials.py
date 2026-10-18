@@ -59,6 +59,15 @@ DIALS = {
                      minors=range(0, 1001, 50)),
     "jet_oil": dict(label="OIL PRESS", sub="PSI", scale=lin(0, -150, 100, 150), majors=list(range(0, 101, 20)),
                     minors=range(0, 101, 5), arcs=[(12, 50, GREEN)]),
+    # Flight engineer's engine gauges. Ranges ESTIMATED (R-4360 class), red lines match web/src/sim/powerplant.ts.
+    "cht": dict(label="CYL TEMP", sub="DEG C", scale=lin(0, -150, 350, 150), majors=list(range(0, 351, 50)),
+                minors=range(0, 351, 10), arcs=[(150, 232, GREEN), (232, 260, YELLOW), (260, 350, RED)]),
+    "oilt": dict(label="OIL TEMP", sub="DEG C", scale=lin(-50, -150, 150, 150), majors=list(range(-50, 151, 50)),
+                 minors=range(-50, 151, 10), arcs=[(40, 85, GREEN), (95, 150, RED)]),
+    "ff": dict(label="FUEL FLOW", sub="LB/HR X 100", scale=lin(0, -150, 3000, 150), majors=list(range(0, 3001, 500)),
+               minors=range(0, 3001, 100), text_fn=lambda v: str(v // 100)),
+    "fuelq": dict(label="FUEL QTY", sub="LB X 1000", scale=lin(0, -150, 100_000, 150), majors=list(range(0, 100_001, 20_000)),
+                  minors=range(0, 100_001, 5_000), text_fn=lambda v: str(v // 1000)),
 }
 
 # Rotating cards (whole face turns): heading card (value = heading deg, card rotates -heading)

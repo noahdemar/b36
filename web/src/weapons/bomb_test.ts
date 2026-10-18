@@ -43,6 +43,7 @@ let released = false;
 let predicted = new THREE.Vector3();
 let fall = 0;
 const mass0 = fm.mass;
+const fuel0 = fm.fuel.total;
 for (let t = 0; t < 400 && (impacts.length === 0); t += 1 / 60) {
   ap.update(fm, 1 / 60);
   fm.step(1 / 60, 2);
@@ -77,7 +78,8 @@ check(err < 3, `impact matches the sight prediction (${err.toFixed(1)} m apart)`
 const miss = Math.hypot(hit.x - target.pos.x, hit.z - target.pos.z);
 check(miss < target.radius, `${target.name} hit (miss ${miss.toFixed(1)} m, lethal radius ${target.radius} m)`);
 check(target.destroyed, "target marked destroyed");
-check(Math.abs(mass0 - fm.mass - 454) < 1, `aircraft 454 kg lighter (${(mass0 - fm.mass).toFixed(0)} kg)`);
+const fuelKg = (fuel0 - fm.fuel.total) * 0.45359237;
+check(Math.abs(mass0 - fm.mass - fuelKg - 454) < 1, `aircraft 454 kg lighter apart from fuel burned (${(mass0 - fm.mass - fuelKg).toFixed(0)} kg)`);
 console.log(range.log[0]);
 console.log(failures ? `${failures} FAILED` : "all passed");
 process.exit(failures ? 1 : 0);

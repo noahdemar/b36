@@ -4,6 +4,7 @@
 import { Quaternion, Vector3 } from "three";
 import { atmosphere, G0 } from "./atmosphere.ts";
 import { AIRCRAFT, type AircraftParams } from "./params.ts";
+import { autoCowl, type Engine, FUEL_KG_PER_LB, FuelSystem, jetFuelFlow, makeEngine, stepEngine } from "./powerplant.ts";
 
 export interface Controls {
   elevator: number; // -1..1, + = pull (nose up)
@@ -18,12 +19,6 @@ export interface Controls {
   parkingBrake: boolean;
   tiller: number; // -1..1 nose wheel steering
   bombDoors: number; // 0..1 commanded
-}
-
-export interface EngineState {
-  rpm: number;
-  map: number; // inHg
-  thrust: number; // N
 }
 
 export interface JetState {
@@ -74,8 +69,12 @@ export class FlightModel {
   quat = new Quaternion(); // body -> world
   omega = new Vector3(); // body rates (x = pitch up, y = yaw left, z = roll left)
   controls: Controls = defaultControls();
-  pistons: EngineState[];
+  pistons: Engine[];
   jets: JetState[];
+  fuel = new FuelSystem();
+  /** AI flight engineer: automatic cowl flaps (fuel sequencing is fuel.auto). Off when a player is at the FE seat. */
+  feAuto = true;
+  private burnedLb = 0;
   flapPos = 0;
   gearPos = 1; // 1 = down and locked
   bombDoorPos = 0;
@@ -94,7 +93,7 @@ export class FlightModel {
       mass * params.rgYaw * params.rgYaw, // about y (yaw)
       mass * params.rgRoll * params.rgRoll, // about z (roll)
     );
-    this.pistons = Array.from({ length: params.piston.count }, () => ({ rpm: 0, map: 29.9, thrust: 0 }));
+    this.pistons = Array.from({ length: params.piston.count }, () => makeEngine(true));
     this.jets = Array.from({ length: params.jet.count }, () => ({ n: 0, rpmPct: 0, egt: 20, fuelPress: 0, oilPress: 0, thrust: 0 }));
     this.readout = {} as Readout;
     this.placeOnGround(new Vector3(0, 0, 0), 0);
@@ -105,6 +104,15 @@ export class FlightModel {
   setMass(m: number) {
     this.inertia.multiplyScalar(m / this.mass);
     this.mass = m;
+  }
+
+  /** Engines and fuel to a known state: running at idle (or cold and dark) and the default fuel load. */
+  resetSystems(running = true) {
+    this.pistons = this.pistons.map(() => makeEngine(running));
+    this.jets.forEach((j) => { j.n = 0; });
+    this.fuel = new FuelSystem();
+    this.burnedLb = 0;
+    if (!running) this.controls.jetThrottle.fill(0);
   }
 
   /** Model-origin offset from CG in body coords (render the model at pos + quat * modelOffset). */
@@ -147,6 +155,14 @@ export class FlightModel {
     this.controls.parkingBrake = false;
     this.controls.trim = t.trim;
     this.controls.elevator = (t.elevRad - t.trim * this.p.trimMax) / this.p.elevatorMax;
+    const oat = atmosphere(altM).temperature - 273.15;
+    for (const e of this.pistons) {
+      if (!e.running) continue;
+      e.rpm = 2300;
+      e.cowl = 0.3;
+      e.cht = Math.max(oat + 150, 150);
+      e.oilT = 70;
+    }
     this.updateReadout(0);
     return t;
   }
@@ -154,6 +170,10 @@ export class FlightModel {
   step(dt: number, substeps = 4) {
     const h = dt / substeps;
     for (let i = 0; i < substeps; i++) this.integrate(h);
+    if (this.burnedLb > 1) {
+      this.setMass(this.mass - this.burnedLb * FUEL_KG_PER_LB);
+      this.burnedLb = 0;
+    }
     this.updateReadout(dt);
   }
 
@@ -168,25 +188,21 @@ export class FlightModel {
     this.gearPos = clamp(this.gearPos + (c.gearDown ? 1 : -1) * gearRate * dt, 0, 1);
     this.bombDoorPos += clamp(c.bombDoors - this.bombDoorPos, -dt / 4, dt / 4);
 
-    const pp = p.piston;
-    const area = Math.PI * (pp.propDiameter / 2) ** 2;
-    const crit = atmosphere(pp.criticalAltitude).density;
-    const altFactor = air.density >= crit ? 1 : air.density / crit;
+    const sides = ["L", "L", "L", "R", "R", "R"] as const;
+    const fuelOk = { L: this.fuel.side("L") > 0.5 || (this.fuel.crossfeed && this.fuel.total > 0.5), R: this.fuel.side("R") > 0.5 || (this.fuel.crossfeed && this.fuel.total > 0.5) };
+    const sel = (s: "L" | "R") => this.fuel.tanks[this.fuel.selected[s]].qty > 0.5
+      || (this.fuel.crossfeed && this.fuel.tanks[this.fuel.selected[s === "L" ? "R" : "L"]].qty > 0.5) || this.fuel.auto;
+    const burn = { L: 0, R: 0 };
     this.pistons.forEach((e, i) => {
-      const thr = clamp(c.throttle[i] ?? 0, 0, 1);
-      const rpmTarget = pp.rpmIdle + (pp.rpmMax - pp.rpmIdle) * Math.sqrt(thr);
-      e.rpm += (rpmTarget - e.rpm) * (1 - Math.exp(-dt / pp.spoolTau));
-      const power = pp.powerTakeoff * (0.04 + 0.96 * thr) * altFactor * clamp((e.rpm - 300) / (pp.rpmMax - 300), 0, 1);
-      e.map = 15 + 37 * thr * Math.min(1, altFactor * 1.05);
-      const tDyn = (pp.propEtaMax * power) / Math.max(V, 1);
-      const tStatic = pp.staticFigureOfMerit * Math.cbrt(2 * air.density * area * power * power);
-      e.thrust = Math.min(tDyn, tStatic);
+      if (this.feAuto && e.running) autoCowl(e, dt);
+      const s = sides[i];
+      burn[s] += stepEngine(e, p, c.throttle[i] ?? 0, air, V, dt, fuelOk[s] && sel(s));
     });
-
     const jp = p.jet;
     this.jets.forEach((j, i) => {
       const thr = clamp(c.jetThrottle[i] ?? 0, 0, 1);
-      const running = thr > 0.01;
+      const side = i < 2 ? "L" : "R";
+      const running = thr > 0.01 && this.fuel.side(side) > 0.5;
       const target = running ? 0.12 + 0.88 * thr : 0;
       const tau = target > j.n ? jp.spoolUpTau : jp.spoolDownTau;
       j.n += (target - j.n) * (1 - Math.exp(-dt / tau));
@@ -196,7 +212,13 @@ export class FlightModel {
       j.oilPress = j.rpmPct > 5 ? 20 + 25 * (j.rpmPct / 100) : 0;
       const mach = V / air.soundSpeed;
       j.thrust = jp.thrustMax * j.n * Math.pow(air.sigma, 0.85) * (1 - 0.12 * mach);
+      if (running) burn[side] += (jetFuelFlow(Math.max(j.thrust, 0.12 * jp.thrustMax * air.sigma)) / 3600) * dt;
     });
+    for (const s of ["L", "R"] as const) {
+      const before = this.fuel.total;
+      this.fuel.draw(s, burn[s]);
+      this.burnedLb += before - this.fuel.total;
+    }
   }
 
   // ---------------------------------------------------------------- dynamics
@@ -277,6 +299,9 @@ export class FlightModel {
     this.jets.forEach((j, i) => {
       addForceAt(fwd.clone().multiplyScalar(j.thrust), new Vector3(p.jet.x[i], -1.8 - this.cg.y, 2.0 - this.cg.z));
     });
+
+    // --- fuel lateral imbalance: wing tanks' centroid ~9 m from the centreline (ESTIMATED)
+    M.z += (this.fuel.side("L") - this.fuel.side("R")) * FUEL_KG_PER_LB * G0 * 9;
 
     // --- gravity (world) and ground contact
     const Fw = F.clone().applyQuaternion(this.quat);
@@ -378,6 +403,18 @@ export class FlightModel {
     r.beta_deg = V > 1 ? (Math.asin(clamp(vb.x / V, -1, 1)) * 180) / Math.PI : 0;
     r.rpm_avg = this.pistons.reduce((a, e) => a + e.rpm, 0) / this.pistons.length;
     r.map_avg = this.pistons.reduce((a, e) => a + e.map, 0) / this.pistons.length;
+    this.pistons.forEach((e, i) => {
+      const n = `eng${i + 1}_`;
+      r[n + "rpm"] = e.rpm;
+      r[n + "map"] = e.map;
+      r[n + "cht"] = e.cht;
+      r[n + "oilt"] = e.oilT;
+      r[n + "oilp"] = e.oilP;
+      r[n + "ff"] = e.ff;
+    });
+    r.fuel_L = this.fuel.side("L");
+    r.fuel_R = this.fuel.side("R");
+    r.fuel_total = this.fuel.total;
     this.jets.forEach((j, i) => {
       r[`jet${i + 1}_rpm`] = j.rpmPct;
       r[`jet${i + 1}_egt`] = j.egt;

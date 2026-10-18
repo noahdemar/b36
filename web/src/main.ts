@@ -3,6 +3,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Aircraft, defaultAircraftState, loadGltf } from "./aircraft";
 import { Cockpit, type Pickable } from "./cockpit";
 import { Crew, type NavData } from "./crew";
+import { Engineer, engineWarnings } from "./engineer";
 import { KEY_HELP, KeyboardInput } from "./input";
 import { BombingRange, RANGE_CENTER } from "./range";
 import { Autopilot } from "./sim/autopilot";
@@ -35,6 +36,8 @@ help.innerHTML = "<b>B-36 flight deck</b><table>" + KEY_HELP.map(([k, v]) => `<t
 const fm = new FlightModel();
 const MASS0 = fm.mass;
 const ap = new Autopilot();
+const engineer = new Engineer();
+let lastStation = "";
 let bombs: BombSystem | null = null;
 let range: BombingRange | null = null;
 let sightView = false;
@@ -64,7 +67,7 @@ let crew: Crew | null = null;
 debugHook.camera = camera;
 debugHook.scene = scene;
 const eyeLocal = new THREE.Vector3();
-const FUNCTIONAL = new Set(["radar_observer"]);
+const FUNCTIONAL = new Set(["radar_observer", "flight_engineer"]);
 const isGunner = (station: string) => station.startsWith("gunner") || station === "tail_gunner";
 const STATION_NAMES: Record<string, string> = {
   aircraft_commander: "Aircraft commander", pilot: "Pilot", flight_engineer: "Flight engineer",
@@ -78,10 +81,12 @@ let orbit: OrbitControls | null = null;
 let showHud = true;
 let extFrames: THREE.Object3D | null = null;
 
-function resetOnRunway() {
+function resetOnRunway(cold = false) {
   ap.disengage();
   bombs?.reload();
   fm.setMass(MASS0);
+  fm.resetSystems(!cold);
+  fm.feAuto = fm.fuel.auto = !atStation("flight_engineer");
   fm.placeOnGround(new THREE.Vector3(0, 0, 0), 0);
   const c = fm.controls;
   c.throttle.fill(0);
@@ -114,6 +119,7 @@ function setView(v: View) {
 function startBombRun() {
   bombs?.reload();
   fm.setMass(MASS0);
+  fm.resetSystems(true);
   fm.placeInFlight(12_000 * 0.3048, 105, 0);
   fm.pos.set(RANGE_CENTER.x + 40, fm.pos.y, RANGE_CENTER.z + 15_000);
   fm.controls.throttle.fill(0.7);
@@ -216,6 +222,25 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
       say(ts.some((t) => t.retract > 0) ? (out ? "TURRETS EXTENDING" : "TURRETS RETRACTING") : "THIS TURRET IS FIXED (ALWAYS READY)");
     }
     if (pressed.has("KeyR")) resetOnRunway();
+    if (pressed.has("KeyR+S")) { resetOnRunway(true); say("COLD AND DARK: engines off. Start them from the flight engineer's seat (behind the right pilot)."); }
+    // flight engineer: sitting down takes over from the automatic engineer
+    const station = cr.mode === "seated" && view === "inside" ? cr.seat?.station ?? "" : "";
+    if (station !== lastStation) {
+      if (station === "flight_engineer") {
+        fm.feAuto = false;
+        fm.fuel.auto = false;
+        say("FLIGHT ENGINEER: you have the panel (automatic engineer off; J hands it back)");
+      } else if (lastStation === "flight_engineer") {
+        engineer.release(fm);
+        fm.feAuto = fm.fuel.auto = true;
+        say("Automatic engineer back on the panel (cowl flaps, tank sequencing)");
+      }
+      lastStation = station;
+    }
+    if (station === "flight_engineer") {
+      const m = engineer.update(fm, input, pressedList, dt);
+      if (m) say(m);
+    }
     if (pressed.has("KeyN")) startBombRun();
     // autopilot: Z from the pilot seats or the bombardier; yoke input disengages it
     if (pressed.has("KeyZ") && (flying() || atStation("radar_observer"))) {
@@ -388,6 +413,7 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
             `\nO doors  K arm  M mode  Space release  V bombsight  A/D steer (autopilot)  Z autopilot`
           : "") +
         (sightNow ? gunnerStatus(sightNow.turrets) : "") +
+        (atStation("flight_engineer") ? engineer.status(fm) : engineWarnings(fm)) +
         (crewMsgT > 0 ? `\n${crewMsg}` : "") +
         (range && range.log.length ? `\n${range.log[0]}` : "");
     }
