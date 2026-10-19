@@ -306,7 +306,7 @@ Architecture: one authoritative simulation, everyone else renders it.
   jitter, 3% 250 ms stalls) max 0.16 m. Browser test (two pages through the real server): crew view vs
   host at the same simulation time, 0.000 m over 537 samples; crew engineer keys reach the host engines;
   seat lock refuses an occupied station; avatars shown on both sides; crew HUD shows the roster and ping.
-  Traffic to one crew member about 1 KB per snapshot before compression.
+  Bandwidth per crew member is not measured yet (needs a real-GPU host at 60 fps).
 
 ## Phases
 
