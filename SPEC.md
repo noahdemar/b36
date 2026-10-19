@@ -295,8 +295,18 @@ Architecture: one authoritative simulation, everyone else renders it.
   angles and fighters; short gaps are extrapolated (up to 250 ms). WebSocket over TCP is enough: each
   snapshot is complete, so a late one is simply superseded, and the 100 ms buffer hides the occasional
   retransmit stall. Compressed with permessage-deflate.
-- Measured in tests (net_test.ts): interpolation error against the true path for a manoeuvring bomber
-  with jitter and loss; browser test with a host and a client page.
+- Clock: snapshots carry the host's simulation time (not wall time), and the crew's playout clock
+  follows the newest snapshot at the host's measured pace (sim seconds per real second over 2 s) with a
+  gentle correction, so a host whose frame rate drops (simulation slower than real time) is still tracked
+  without extrapolation errors. Found by the browser test: with wall-clock stamps the crew ran 31 m
+  ahead of a slow host.
+- Measured (2026-10-19): net_test.ts, manoeuvring bomber at 105 m/s, 30 Hz snapshots, 60 Hz client:
+  LAN error p99 0.000 m, render delay 86 ms; internet (40 ms, 8 ms jitter, 1% 120 ms TCP stalls) p99
+  0.003 m, attitude 0.001 deg, delay 130 ms; host at half speed p99 0.000 m; poor link (80 ms, 25 ms
+  jitter, 3% 250 ms stalls) max 0.16 m. Browser test (two pages through the real server): crew view vs
+  host at the same simulation time, 0.000 m over 537 samples; crew engineer keys reach the host engines;
+  seat lock refuses an occupied station; avatars shown on both sides; crew HUD shows the roster and ping.
+  Traffic to one crew member about 1 KB per snapshot before compression.
 
 ## Phases
 
