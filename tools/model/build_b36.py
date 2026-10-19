@@ -260,6 +260,17 @@ def empty(name, frame=None, parent=None, extras=None):
     return ob
 
 
+def add_shape_key(ob, name, mb):
+    """Add a shape key whose vertices come from mb (same topology as the object's mesh)."""
+    if ob.data.shape_keys is None:
+        ob.shape_key_add(name="Basis")
+    key = ob.shape_key_add(name=name)
+    inv = ob.matrix_world.inverted()
+    for i, v in enumerate(mb.verts):
+        key.data[i].co = inv @ v
+    return key
+
+
 def hinge_frame(p0, p1, up=Vector((0, 0, 1))):
     """Frame with origin p0, local X along p0->p1, local Z closest to `up`."""
     x = (p1 - p0).normalized()
@@ -857,56 +868,79 @@ def build_engines():
         c = center(ring_t)
         revolve(mb, lambda t, c=c: c + Vector((0, -t, 0)),
                 [(0.0, 0.945), (0.10, 0.945)], seg=40, scale=(P.NACELLE_W / 1.9, 1.0), mat="exhaust")
-        # cowl flaps (gills) around the aft cowling, opened slightly
-        cg = center(0.92)
-        ng = 22
-        for k in range(ng):
-            a0 = 2 * math.pi * k / ng
-            a1 = 2 * math.pi * (k + 0.82) / ng
-            sw = P.NACELLE_W / 1.9
-            rr = 0.80
-            p0 = cg + Vector((math.sin(a0) * rr * sw, 0.10, math.cos(a0) * rr))
-            p1 = cg + Vector((math.sin(a1) * rr * sw, 0.10, math.cos(a1) * rr))
-            q1 = cg + Vector((math.sin(a1) * (rr + 0.07) * sw, -0.32, math.cos(a1) * (rr + 0.07)))
-            q0 = cg + Vector((math.sin(a0) * (rr + 0.07) * sw, -0.32, math.cos(a0) * (rr + 0.07)))
-            plate(mb, [p0, p1, q1, q0], thick=0.012, mat="alu_dark")
+        # Exhaust ends (glow / flame emitters for the web client), right side; mirrored below
+        stubs = [Vector((ex + sx * 0.86, y_te - 0.2, axis_z - 0.45)) + Vector((sx * 0.08, -0.55, -0.05))
+                 for sx in (1, -1)]
         for side, geo in (("R", mb), ("L", mb.mirrored())):
             to_object(f"Nacelle_{side}{idx + 1}", geo)
+        # Cowl flaps (gills) around the aft cowling: a separate mesh with an "open" shape key, driven
+        # by the engineer's cowl flap setting. Closed and open trailing edge radii are ESTIMATED.
+        cg = center(0.92)
+
+        def gills(flare):
+            g = MeshBuilder()
+            ng = 22
+            sw = P.NACELLE_W / 1.9
+            rr = 0.80
+            for k in range(ng):
+                a0 = 2 * math.pi * k / ng
+                a1 = 2 * math.pi * (k + 0.82) / ng
+                p0 = cg + Vector((math.sin(a0) * rr * sw, 0.10, math.cos(a0) * rr))
+                p1 = cg + Vector((math.sin(a1) * rr * sw, 0.10, math.cos(a1) * rr))
+                q1 = cg + Vector((math.sin(a1) * (rr + flare) * sw, -0.32, math.cos(a1) * (rr + flare)))
+                q0 = cg + Vector((math.sin(a0) * (rr + flare) * sw, -0.32, math.cos(a0) * (rr + flare)))
+                plate(g, [p0, p1, q1, q0], thick=0.012, mat="alu_dark")
+            return g
+
+        closed, opened = gills(-0.03), gills(0.20)
+        for side, gc, go in (("R", closed, opened), ("L", closed.mirrored(), opened.mirrored())):
+            ob = to_object(f"Cowl_{side}{idx + 1}", gc, extras={"cowl": idx + 1, "side": side})
+            add_shape_key(ob, "open", go)
+        for side, sx in (("R", 1), ("L", -1)):
+            for k, q in enumerate(stubs):
+                empty(f"Exhaust_{side}{idx + 1}_{k}", frame=translation((sx * q.x, q.y, q.z)),
+                      extras={"exhaust": idx + 1, "side": side})
         build_prop(idx, Vector((ex, prop_y, axis_z)))
 
 
 def build_prop(idx, hub):
+    """Spinner (the rotating node) with three blade children that turn about their own radial axis
+    for pitch change and feathering. Both sides use the same blade hand and turn the same way."""
     R = P.PROP_DIAM / 2
-    mb = MeshBuilder()
-    # Spinner (points aft for pusher)
-    revolve(mb, lambda t: hub + Vector((0, -t, 0)),
-            [(-0.15, 0.46), (0.0, 0.47), (0.3, 0.42), (0.6, 0.30), (0.85, 0.15), (0.98, 0.02)],
-            seg=32, mat="alu", cap_start=True)
-    # Blades
     rs = [0.40 + (R - 0.40) * k / 16 for k in range(17)]
     axis = Vector((0, -1, 0))
-    for b in range(3):
-        phi = 2 * math.pi * b / 3 + math.radians(15)
-        er = Vector((math.sin(phi), 0, math.cos(phi)))
-        et = axis.cross(er).normalized()
-        secs, rings_mats = [], []
-        for r in rs:
-            u = (r - 0.4) / (R - 0.4)
-            chord = 0.30 + 0.22 * math.sin(math.pi * min(u * 1.25, 1.0)) - 0.12 * u * u
-            beta = math.radians(lerp(55, 18, u))
-            tc = lerp(0.32, 0.06, min(u * 1.4, 1))
-            cd = (et * math.cos(beta) + axis * math.sin(beta))
-            td = (-et * math.sin(beta) + axis * math.cos(beta))
-            le = hub + er * r - cd * (0.35 * chord)
-            secs.append(Section(le, cd, td, chord, tc))
-            rings_mats.append("prop_tip" if r > R - 0.28 else "prop")
-        surface(mb, secs, [(0, 1)] * len(secs), n=10,
-                mat_fn=lambda i, j, m=rings_mats: m[i + 1], cap_end=True, cap_start=True)
-    extras = {"part": "prop", "axis": gltf_axis((0, 1, 0)), "engine": idx + 1}
-    to_object(f"Prop_R{idx + 1}", mb, frame=translation(hub), extras={**extras, "side": "R"})
-    m = mb.mirrored()
-    hub_l = Vector((-hub.x, hub.y, hub.z))
-    to_object(f"Prop_L{idx + 1}", m, frame=translation(hub_l), extras={**extras, "side": "L"})
+    r75 = 0.75 * R
+    beta75 = lerp(55, 18, (r75 - 0.4) / (R - 0.4))  # blade angle the mesh is built at, 0.75 R
+    for side, c in (("R", hub), ("L", Vector((-hub.x, hub.y, hub.z)))):
+        mb = MeshBuilder()
+        # Spinner (points aft for pusher)
+        revolve(mb, lambda t, c=c: c + Vector((0, -t, 0)),
+                [(-0.15, 0.46), (0.0, 0.47), (0.3, 0.42), (0.6, 0.30), (0.85, 0.15), (0.98, 0.02)],
+                seg=32, mat="alu", cap_start=True)
+        prop = to_object(f"Prop_{side}{idx + 1}", mb, frame=translation(c),
+                         extras={"part": "prop", "axis": gltf_axis((0, 1, 0)), "engine": idx + 1, "side": side})
+        for b in range(3):
+            phi = 2 * math.pi * b / 3 + math.radians(15)
+            er = Vector((math.sin(phi), 0, math.cos(phi)))
+            et = axis.cross(er).normalized()
+            secs, rings_mats = [], []
+            for r in rs:
+                u = (r - 0.4) / (R - 0.4)
+                chord = 0.30 + 0.22 * math.sin(math.pi * min(u * 1.25, 1.0)) - 0.12 * u * u
+                beta = math.radians(lerp(55, 18, u))
+                tc = lerp(0.32, 0.06, min(u * 1.4, 1))
+                cd = (et * math.cos(beta) + axis * math.sin(beta))
+                td = (-et * math.sin(beta) + axis * math.cos(beta))
+                le = c + er * r - cd * (0.35 * chord)
+                secs.append(Section(le, cd, td, chord, tc))
+                rings_mats.append("prop_tip" if r > R - 0.28 else "prop")
+            bm = MeshBuilder()
+            surface(bm, secs, [(0, 1)] * len(secs), n=10,
+                    mat_fn=lambda i, j, m=rings_mats: m[i + 1], cap_end=True, cap_start=True)
+            # rotating about +er turns the chord toward the prop axis: positive = more pitch
+            to_object(f"Blade_{side}{idx + 1}_{b}", bm, frame=translation(c), parent=prop,
+                      extras={"part": "blade", "axis": gltf_axis(er), "beta75": beta75, "r75": r75,
+                              "radius": R})
 
 
 def build_jetpods():
@@ -943,6 +977,11 @@ def build_jetpods():
     surface(mb, pyl_secs, [(0, 1), (0, 1)], n=16)
     for side, geo in (("R", mb), ("L", mb.mirrored())):
         to_object(f"JetPod_{side}", geo)
+    # jet exhaust ends (glow emitters); the web client matches each to the nearest jet by x
+    for side, sx in (("L", -1), ("R", 1)):
+        for k, off in enumerate((-0.53, 0.53)):
+            empty(f"JetExhaust_{side}{k}", frame=translation((sx * (x + off), y0 - P.JET_LEN, cz)),
+                  extras={"jet_exhaust": 1})
 
 
 # ---------------------------------------------------------------- tail
@@ -1094,6 +1133,9 @@ def wheel(mb, center, r, width, axis=Vector((1, 0, 0))):
 
 
 def build_gear():
+    """Each leg: the strut (retracts) > the oleo (slides up the strut as it compresses; the nose
+    oleo also steers) > the wheels (spin). The model is built at full extension; the web client
+    raises the oleo by the leg's compression."""
     g = P.GROUND_Z
     for side, sx in (("R", 1), ("L", -1)):
         mb = MeshBuilder()
@@ -1102,7 +1144,6 @@ def build_gear():
         bogie_z = g + P.MAIN_WHEEL_R
         yg = fus_y(P.MAIN_GEAR_D)
         tube(mb, top, (x, yg, bogie_z + 0.85), 0.21, seg=20)
-        tube(mb, (x, yg, bogie_z + 0.95), (x, yg, bogie_z + 0.05), 0.14, seg=20, mat="chrome")  # oleo
         for k in (-1, 1):  # torque links
             tube(mb, (x, yg + 0.22 * k, bogie_z + 0.85), (x, yg + 0.30 * k, bogie_z + 0.48), 0.035, seg=8)
             tube(mb, (x, yg + 0.30 * k, bogie_z + 0.48), (x, yg + 0.16 * k, bogie_z + 0.12), 0.035, seg=8)
@@ -1113,32 +1154,53 @@ def build_gear():
             plate(mb, [(xd, yg + 1.5, wz), (xd, yg - 1.3, wz), (xd, yg - 1.3, wz - 1.25), (xd, yg + 1.5, wz - 1.25)],
                   thick=0.03, mat="skin_wing")
         # drag brace
-        tube(mb, (x, fus_y(P.MAIN_GEAR_D) + 2.2, top.z + 0.2), (x, fus_y(P.MAIN_GEAR_D), bogie_z + 1.4), 0.09, seg=10)
-        tube(mb, (x, fus_y(P.MAIN_GEAR_D) + 0.9, bogie_z), (x, fus_y(P.MAIN_GEAR_D) - 0.9, bogie_z), 0.12, seg=12)
+        tube(mb, (x, yg + 2.2, top.z + 0.2), (x, yg, bogie_z + 1.4), 0.09, seg=10)
+        leg = f"main{side}"
+        strut = to_object(f"Gear_Main_{side}", mb, frame=translation(top),
+                          extras={"part": "gear", "side": side, "axis": [0.0, 0.0, 1.0]})
+        om = MeshBuilder()
+        tube(om, (x, yg, bogie_z + 0.95), (x, yg, bogie_z + 0.05), 0.14, seg=20, mat="chrome")  # oleo
+        tube(om, (x, yg + 0.9, bogie_z), (x, yg - 0.9, bogie_z), 0.12, seg=12)  # bogie beam
         for dy in (0.9, -0.9):
-            tube(mb, (x - 0.65, fus_y(P.MAIN_GEAR_D) + dy, bogie_z), (x + 0.65, fus_y(P.MAIN_GEAR_D) + dy, bogie_z), 0.08, seg=10)
+            tube(om, (x - 0.65, yg + dy, bogie_z), (x + 0.65, yg + dy, bogie_z), 0.08, seg=10)  # axles
+        oleo = to_object(f"Oleo_Main_{side}", om, frame=translation((x, yg, bogie_z)), parent=strut,
+                         extras={"part": "oleo", "leg": leg, "axis": gltf_axis((0, 0, 1))})
+        n = 0
+        for dy in (0.9, -0.9):
             for dx in (-0.42, 0.42):
-                wheel(mb, (x + dx, fus_y(P.MAIN_GEAR_D) + dy, bogie_z), P.MAIN_WHEEL_R, 0.42)
-        to_object(f"Gear_Main_{side}", mb, frame=translation(top),
-                  extras={"part": "gear", "side": side, "axis": [0.0, 0.0, 1.0]})
+                c = Vector((x + dx, yg + dy, bogie_z))
+                wm = MeshBuilder()
+                wheel(wm, c, P.MAIN_WHEEL_R, 0.42)
+                to_object(f"Wheel_Main_{side}{n}", wm, frame=translation(c), parent=oleo,
+                          extras={"part": "wheel", "leg": leg, "radius": P.MAIN_WHEEL_R, "axis": [1.0, 0.0, 0.0]})
+                n += 1
 
     mb = MeshBuilder()
     y = fus_y(P.NOSE_GEAR_D)
     top = Vector((0, y, fus_center_z(P.NOSE_Y - y) - fus_radius(P.NOSE_Y - y) + 0.3))
     wz = g + P.NOSE_WHEEL_R
     tube(mb, top, (0, y - 0.1, wz + 0.75), 0.17, seg=16)
-    tube(mb, (0, y - 0.12, wz + 0.85), (0, y - 0.25, wz + 0.1), 0.11, seg=16, mat="chrome")
     zb = top.z - 0.15
     for k in (-1, 1):  # nose gear doors
         xd = k * 0.55
         plate(mb, [(xd, y + 1.0, zb), (xd, y - 1.0, zb), (xd, y - 1.0, zb - 0.85), (xd, y + 1.0, zb - 0.85)],
               thick=0.03, mat="skin_fus")
-    tube(mb, (-0.45, y - 0.25, wz), (0.45, y - 0.25, wz), 0.07, seg=10)
-    for dx in (-0.3, 0.3):
-        wheel(mb, (dx, y - 0.25, wz), P.NOSE_WHEEL_R, 0.32)
     tube(mb, (0, y + 1.6, top.z + 0.05), (0, y - 0.15, wz + 1.0), 0.07, seg=10)
-    to_object("Gear_Nose", mb, frame=translation(top),
-              extras={"part": "gear", "side": "C", "axis": [1.0, 0.0, 0.0]})
+    strut = to_object("Gear_Nose", mb, frame=translation(top),
+                      extras={"part": "gear", "side": "C", "axis": [1.0, 0.0, 0.0]})
+    p0, p1 = Vector((0, y - 0.12, wz + 0.85)), Vector((0, y - 0.25, wz + 0.1))
+    up = (p0 - p1).normalized()  # oleo slide and steering axis
+    om = MeshBuilder()
+    tube(om, p0, p1, 0.11, seg=16, mat="chrome")
+    tube(om, (-0.45, y - 0.25, wz), (0.45, y - 0.25, wz), 0.07, seg=10)  # axle
+    oleo = to_object("Oleo_Nose", om, frame=translation((0, y - 0.25, wz)), parent=strut,
+                     extras={"part": "oleo", "leg": "nose", "steer": 1, "axis": gltf_axis(up)})
+    for n, dx in enumerate((-0.3, 0.3)):
+        c = Vector((dx, y - 0.25, wz))
+        wm = MeshBuilder()
+        wheel(wm, c, P.NOSE_WHEEL_R, 0.32)
+        to_object(f"Wheel_Nose{n}", wm, frame=translation(c), parent=oleo,
+                  extras={"part": "wheel", "leg": "nose", "radius": P.NOSE_WHEEL_R, "axis": [1.0, 0.0, 0.0]})
 
 
 # ---------------------------------------------------------------- turrets

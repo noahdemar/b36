@@ -399,6 +399,22 @@ export class FlightModel {
     void dt;
   }
 
+  /** Landing gear legs as the ground contact sees them, from the current state (also on multiplayer
+   * replicas): compression (m, the spring's penetration; 0 off the ground) and rolling speed (m/s along
+   * the wheel's heading, + forward). Used by the exterior model for oleo travel, wheel spin, tire smoke. */
+  legContacts(): { name: string; comp: number; roll: number }[] {
+    const omegaW = this.omega.clone().applyQuaternion(this.quat);
+    const fwd = new Vector3(0, 0, -1).applyQuaternion(this.quat).setY(0);
+    if (fwd.lengthSq() < 1e-9) fwd.set(0, 0, -1);
+    fwd.normalize();
+    return this.p.gear.map((g) => {
+      const rw = new Vector3(g.pos[0], g.pos[1], g.pos[2]).sub(this.cg).applyQuaternion(this.quat);
+      const pen = -(this.pos.y + rw.y);
+      const vp = this.vel.clone().add(omegaW.clone().cross(rw));
+      return { name: g.name, comp: this.gearPos > 0.98 ? Math.max(0, pen) : 0, roll: vp.dot(fwd) };
+    });
+  }
+
   // ---------------------------------------------------------------- readout
 
   /** Recompute the instrument readout from the current state (multiplayer replicas, which do not integrate). */

@@ -308,6 +308,25 @@ Architecture: one authoritative simulation, everyone else renders it.
   seat lock refuses an occupied station; avatars shown on both sides; crew HUD shows the roster and ping.
   Bandwidth per crew member is not measured yet (needs a real-GPU host at 60 fps).
 
+## Exterior animation (2026-10-19)
+Driven every frame from the flight model state, so multiplayer crew see the same thing from the
+replicated engine, control and kinematic state (nothing new is sent). Code: web/src/aircraft.ts;
+test: src/sim/gear_test.ts.
+- Turrets: fixed (Aircraft.apply was resetting them every frame after Turret.update aimed them).
+- Cowl flaps: separate mesh per nacelle with an "open" morph target, set from the engineer's cowl
+  setting. Closed and open trailing-edge radii ESTIMATED.
+- Propellers: blades are separate nodes that turn for pitch. Blade angle at 0.75 R = relative wind
+  + 4 deg, between a 14 deg fine stop and 88 deg feathered, changing at 10 deg/s: all ESTIMATED (no
+  Curtiss Electric figures found). Reverse pitch is not modelled by the sim, so it is not shown.
+  All six props now use the same blade hand and turn the same way (the left ones were mirrored).
+  Blur: blades fade and a translucent disc appears with rpm (visual tuning, not a physical value).
+- Landing gear: strut > oleo > wheels. The oleo rises by the leg's compression from
+  FlightModel.legContacts() (static: mains 0.22 m, nose 0.09 m, MEASURED from the sim; before this the
+  wheels sank that far into the runway). The nose oleo steers with tiller and pedals. Wheels spin at
+  rolling speed / radius, spin up on touchdown with a 0.12 s time constant (ESTIMATED) and make tire
+  smoke while they skid (browser check: 0 to 71 rad/s, slip 27 to 12 m/s in the first 0.1 s).
+- Exhaust glow at the 12 stacks and 4 jet nozzles, scaled by power and darker sky (visual tuning).
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part

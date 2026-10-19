@@ -217,6 +217,22 @@ export class DamageFX {
     if (big) this.smoke.spawn(w, vel.clone().multiplyScalar(0.8), 2.5, 3, 3, 0.6, [0.1, 0.1, 0.1]);
   }
 
+  /** Tire smoke while a wheel skids up to speed on touchdown: puffs at the contact patch, left behind
+   * on the runway. `slip` is the skid speed (m/s). Rates and sizes are visual tuning. */
+  tireSmoke(fm: FlightModel, wheel: THREE.Object3D, radius: number, slip: number, dt: number) {
+    const n = slip * dt * 6;
+    const count = Math.floor(n) + (Math.random() < n % 1 ? 1 : 0);
+    if (!count) return;
+    const local = this.aircraftRoot.worldToLocal(wheel.getWorldPosition(new THREE.Vector3()));
+    local.y -= radius * 0.8;
+    const w = this.toWorld(fm, local);
+    const dens = Math.min(1, slip / 25);
+    for (let k = 0; k < count; k++) {
+      const v = new THREE.Vector3((Math.random() - 0.5) * 3, 0.5 + Math.random(), (Math.random() - 0.5) * 3);
+      this.smoke.spawn(w, v, 1.2, 2.5 + Math.random() * 1.5, 2.5 + Math.random() * 1.5, 0.55 * dens, [0.82, 0.82, 0.8]);
+    }
+  }
+
   /** Gun muzzle: flash, smoke left behind in the slipstream, an ejected case. world frame. */
   muzzle(w: THREE.Vector3, dir: THREE.Vector3, carrierVel: THREE.Vector3, smoke: boolean) {
     this.fire.spawn(w.clone().addScaledVector(dir, 0.4), carrierVel, 1.1 + Math.random() * 0.5, 3, 0.045, 1, [1.0, 0.8, 0.45]);

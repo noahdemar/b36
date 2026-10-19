@@ -940,6 +940,8 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
   me = makePlayer(0, "You", true, crew, input, gunsight, engineer);
   debugHook.crew = crew;
   const aircraft = new Aircraft(ext);
+  debugHook.aircraft = aircraft;
+  aircraft.onTireSlip = (wheel, r, slip, dt) => fx?.tireSmoke(fm, wheel, r, slip, dt);
   const cockpit = new Cockpit(int);
   aircraftRoot.add(ext, int);
   const aniso = renderer.capabilities.getMaxAnisotropy();
@@ -1128,6 +1130,16 @@ Promise.all([loadGltf(MODELS.exterior), loadGltf(MODELS.interior), navReq]).then
     vis.gear = fm.gearPos;
     vis.bombDoors.fill(fm.bombDoorPos);
     vis.propRpm = fm.pistons.map((e) => e.rpm);
+    vis.cowl = fm.pistons.map((e) => e.cowl);
+    vis.feather = fm.pistons.map((e) => e.feather);
+    vis.running = fm.pistons.map((e) => e.running);
+    vis.power = fm.pistons.map((e) => e.power / fm.p.piston.powerTakeoff);
+    vis.jetN = fm.jets.map((j) => j.n);
+    vis.tas = fm.readout.tas_mps;
+    vis.steer = c.tiller * fm.p.noseSteerMax + c.rudder * fm.p.pedalSteerMax;
+    vis.legs = fm.legContacts();
+    vis.night = world.darkness;
+    if (debugHook.visPatch) Object.assign(vis, debugHook.visPatch);
     aircraft.apply(vis, dt);
     cockpit.update(fm, dt);
 

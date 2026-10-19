@@ -50,6 +50,10 @@ export class World {
   private scene: THREE.Scene;
   private renderer: THREE.WebGLRenderer;
   private sunDir = new THREE.Vector3();
+  /** 0 in daylight .. 1 once the sun is well below the horizon (visual effects only). */
+  get darkness() {
+    return 1 - THREE.MathUtils.smoothstep(this.sunDir.y, -0.1, 0.12);
+  }
 
   constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
     this.scene = scene;

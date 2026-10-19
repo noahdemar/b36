@@ -14,7 +14,7 @@ See SPEC.md for decisions, plan and status.
 - Exterior: `cd tools/model && uv run python build_b36.py`; interior: `uv run python build_interior.py`
   (`--ao-res 0` skips the ~5.5 min AO bake for quick iterations).
 - Web: `cd web && npm run build`; tests: `node --experimental-strip-types src/<name>_test.ts`
-  (sim/perf, sim/stability, sim/engine, sim/autopilot, sim/instructor, sim/damage, flak, weapons/bomb,
+  (sim/perf, sim/stability, sim/engine, sim/gear, sim/autopilot, sim/instructor, sim/damage, flak, weapons/bomb,
   weapons/gunnery, weapons/fighters, crew).
 - Hosted page: `web/artifact/build.sh`, then publish web/artifact/out.
 - Multiplayer: `cd web && npm run serve` (session server on 8036, see MULTIPLAYER.md); tests
