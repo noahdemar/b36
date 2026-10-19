@@ -401,6 +401,11 @@ export class FlightModel {
 
   // ---------------------------------------------------------------- readout
 
+  /** Recompute the instrument readout from the current state (multiplayer replicas, which do not integrate). */
+  refreshReadout(dt: number) {
+    this.updateReadout(dt);
+  }
+
   private updateReadout(dt: number) {
     const r = this.readout;
     const air = atmosphere(this.pos.y);

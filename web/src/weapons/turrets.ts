@@ -186,6 +186,26 @@ export class Turret {
     return { shots, interrupted };
   }
 
+  /** Multiplayer replica: put the turret where the host has it (no slewing, no firing logic). */
+  setPose(az: number, el: number, ext: number, recoil: number, extendCmd: boolean) {
+    this.slewing = Math.hypot(Math.atan2(Math.sin(az - this.az), Math.cos(az - this.az)), el - this.el) > 0.002 || (ext > 0.001 && ext < 0.999);
+    this.ext = ext;
+    this.extendCmd = extendCmd;
+    this.az = az;
+    this.el = el;
+    this.recoil = recoil;
+    this.yawNode.position.copy(this.stowPos).addScaledVector(this.extendDir, this.retract * this.ext);
+    this.yawNode.visible = this.ext > 0.01;
+    if (this.clipPoint) {
+      const pm = this.yawNode.parent!.matrixWorld;
+      const n = this.extendDir.clone().transformDirection(pm);
+      this.clip.setFromNormalAndCoplanarPoint(n, this.clipPoint.clone().applyMatrix4(pm));
+    }
+    this.pitchNode.quaternion.copy(this.basePitchQ).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this.el));
+    this.pitchNode.position.copy(this.pitchRest).add(new THREE.Vector3(0, 0, 0.05 * this.recoil).applyQuaternion(this.pitchNode.quaternion));
+    this.yawNode.quaternion.copy(this.baseYawQ).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this.az));
+  }
+
   resetCooldown() {
     // second gun half a cycle behind the first, so a pair fires alternately
     const interval = 60 / GUN.rpm;
@@ -260,8 +280,12 @@ export class Rounds {
     }
   }
 
+  /** Every round fired (multiplayer: the host forwards them so the crew see the same tracers). */
+  onSpawn: ((pos: THREE.Vector3, vel: THREE.Vector3, tracer: boolean, life: number, tag: number) => void) | null = null;
+
   /** tag: who fired (passed back to onSegment). */
   spawn(pos: THREE.Vector3, vel: THREE.Vector3, tracer = true, life = 5, tag = 0) {
+    this.onSpawn?.(pos, vel, tracer, life, tag);
     if (this.pos.length >= Rounds.MAX) {
       this.pos.shift();
       this.vel.shift();

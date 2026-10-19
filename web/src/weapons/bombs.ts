@@ -122,6 +122,25 @@ export class BombSystem {
     return p;
   }
 
+  /** Each bomb released (world position and velocity), for multiplayer replication. */
+  onDrop: ((pos: THREE.Vector3, vel: THREE.Vector3) => void) | null = null;
+
+  /** Rack load as a string of 0/1 (multiplayer). */
+  get loadedMask() {
+    return this.racks.map((r) => (r.loaded ? "1" : "0")).join("");
+  }
+
+  set loadedMask(m: string) {
+    this.racks.forEach((r, i) => { r.loaded = m[i] === "1"; r.mesh.visible = r.loaded; });
+  }
+
+  /** A falling bomb seen on a crew member's screen (the host's drop, replayed). */
+  spawnFalling(pos: THREE.Vector3, vel: THREE.Vector3) {
+    const mesh = this.template.clone();
+    this.worldGroup.add(mesh);
+    this.falling.push({ pos: pos.clone(), vel: vel.clone(), mesh });
+  }
+
   /** Drop n bombs in release order. */
   private drop(fm: FlightModel, modelMatrix: THREE.Matrix4, n: number) {
     const order = this.order();
@@ -136,6 +155,7 @@ export class BombSystem {
       const mesh = this.template.clone();
       this.worldGroup.add(mesh);
       this.falling.push({ pos: p, vel: fm.vel.clone().add(new THREE.Vector3(0, -1.5, 0)), mesh });
+      this.onDrop?.(p, this.falling[this.falling.length - 1].vel);
       fm.setMass(fm.mass - BOMB.mass);
     }
   }

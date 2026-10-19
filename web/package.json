@@ -5,15 +5,19 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "serve": "npm run build && node --experimental-strip-types server/server.ts",
+    "serve:nobuild": "node --experimental-strip-types server/server.ts"
   },
   "dependencies": {
     "lil-gui": "^0.20.0",
-    "three": "^0.180.0"
+    "three": "^0.180.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",
     "@types/three": "^0.180.0",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.7"
   }

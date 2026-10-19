@@ -17,3 +17,8 @@ See SPEC.md for decisions, plan and status.
   (sim/perf, sim/stability, sim/engine, sim/autopilot, sim/instructor, sim/damage, flak, weapons/bomb,
   weapons/gunnery, weapons/fighters, crew).
 - Hosted page: `web/artifact/build.sh`, then publish web/artifact/out.
+- Multiplayer: `cd web && npm run serve` (session server on 8036, see MULTIPLAYER.md); tests
+  `node --experimental-strip-types src/net/net_test.ts` and `server/server_test.ts`. The host's browser
+  is authoritative; crew poses are always in the aircraft model frame (never world coordinates).
+  Any new station control must go through `stationFrame` (keys) or `ctl` (pointer commands) so remote
+  crew can use it, and any new visible state must be added to `net/replicate.ts`.

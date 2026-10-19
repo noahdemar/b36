@@ -271,6 +271,33 @@ World (user priorities: sky and clouds, terrain, station interiors):
 Open: fighter visuals are low poly; no cloud shadows on terrain; sound is synthesized (no samples);
 radio operator station not functional.
 
+## Multiplayer multicrew (requested 2026-10-19)
+
+Decision (user): hosted locally, friends join by IP. No public hosting for now.
+
+Architecture: one authoritative simulation, everyone else renders it.
+- `web/server/server.ts` (Node): the host runs it on their machine. It serves the built game and a
+  WebSocket at /ws on port 8036 (0.0.0.0). It is a relay: it assigns player ids, passes player input
+  to the host and the host's snapshots to everyone. Friends open http://<host-ip>:8036.
+- The host's browser (the first connection from the host's own machine) runs the full sim exactly as in
+  single player (flight model, systems, damage, flak, fighters, AI gunners) for the whole crew. Remote
+  players' key presses, held keys, mouse yoke, gun sight direction and cockpit lever commands arrive as
+  input packets and run through the same station code as the host's own input (per-player context).
+- Sync of a moving aircraft (the key requirement): crew positions never live in world coordinates.
+  Every crew pose (own and others') is kept and sent in the aircraft's model frame, and the camera is
+  aircraft pose x local eye. So however the aircraft is interpolated, the cabin, your own body and the
+  other crew move together; nobody slides out of the fuselage. Your own walking is simulated locally
+  (no latency); the host trusts it (cooperative game) and applies seat locks.
+- Aircraft and world state: host snapshots at 30 Hz (kinematics, controls, turrets, fighters, crew
+  poses) and 5 Hz (engines, fuel, damage, bombs, stations), plus events (shots, flak bursts, hits,
+  explosions, messages). Clients estimate the host clock (min-delay filter over pings) and render
+  100 ms in the past, interpolating position with velocity (cubic Hermite), attitude with slerp, turret
+  angles and fighters; short gaps are extrapolated (up to 250 ms). WebSocket over TCP is enough: each
+  snapshot is complete, so a late one is simply superseded, and the 100 ms buffer hides the occasional
+  retransmit stall. Compressed with permessage-deflate.
+- Measured in tests (net_test.ts): interpolation error against the true path for a manoeuvring bomber
+  with jitter and loss; browser test with a host and a client page.
+
 ## Phases
 
 1. Exterior model v2: geometry matched to three-view and photos, materials, animated part

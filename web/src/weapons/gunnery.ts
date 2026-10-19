@@ -29,9 +29,11 @@ export interface PlayerAim {
    * lead-corrected solution, or null to hold. */
   aimFor: ((t: Turret, pivotWorld: THREE.Vector3) => THREE.Vector3 | null) | null;
   fire: boolean;
+  /** Round tag for hit credit (0 = this machine's player, 1 = AI gunners, 100 + id = a remote crew member). */
+  tag?: number;
 }
 
-export interface Shot { turret: Turret; posWorld: THREE.Vector3; dirWorld: THREE.Vector3; player: boolean }
+export interface Shot { turret: Turret; posWorld: THREE.Vector3; dirWorld: THREE.Vector3; player: boolean; tag: number }
 
 export class DefensiveFire {
   ai = true;
@@ -62,7 +64,9 @@ export class DefensiveFire {
     return world.clone().sub(new THREE.Vector3(fm.pos.x, 0, fm.pos.z));
   }
 
-  update(fm: FlightModel, dt: number, player: PlayerAim | null) {
+  /** players: every manned gun station this frame (several crew members in multiplayer). */
+  update(fm: FlightModel, dt: number, players: PlayerAim | PlayerAim[] | null) {
+    const manned = players === null ? [] : Array.isArray(players) ? players : [players];
     this.interrupted = false;
     this.shots.length = 0;
     const fighters = this.fighters?.list.filter((f) => f.alive) ?? [];
@@ -75,7 +79,8 @@ export class DefensiveFire {
     for (const t of this.turrets.values()) {
       const comp = fm.damage.byId.get(t.name);
       const dead = !!comp && comp.hp <= 0;
-      const mine = !!player && player.turrets.includes(t.name);
+      const player = manned.find((m) => m.turrets.includes(t.name)) ?? null;
+      const mine = !!player;
       let cmd: { az: number; el: number } | null = null;
       let fire = false;
       if (dead) {
@@ -98,13 +103,14 @@ export class DefensiveFire {
       t.update(dt, cmd);
       if (!fire || !t.ready) { t.resetCooldown(); continue; }
       const res = t.fire(dt, blocked);
-      if (res.interrupted && mine) this.interrupted = true;
+      if (res.interrupted && mine && (player!.tag ?? 0) === 0) this.interrupted = true;
+      const tag = mine ? player!.tag ?? 0 : 1;
       for (const s of res.shots) {
         const posW = this.toWorld(fm, s.pos);
         const dir = s.dir.clone().add(new THREE.Vector3(gauss(this.rng), gauss(this.rng), gauss(this.rng)).multiplyScalar(DISPERSION)).normalize();
         const tracer = this.roundNo++ % TRACER_EVERY === 0;
-        this.rounds.spawn(posW, fm.vel.clone().addScaledVector(dir, GUN.muzzle), tracer, 5, mine ? 0 : 1);
-        this.shots.push({ turret: t, posWorld: posW, dirWorld: dir, player: mine });
+        this.rounds.spawn(posW, fm.vel.clone().addScaledVector(dir, GUN.muzzle), tracer, 5, tag);
+        this.shots.push({ turret: t, posWorld: posW, dirWorld: dir, player: mine, tag });
       }
     }
   }

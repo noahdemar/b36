@@ -31,21 +31,17 @@ export const KEY_HELP: [string, string][] = [
   ["H", "Show / hide this help"],
 ];
 
-export class KeyboardInput {
-  private down = new Set<string>();
-  private pressed: string[] = [];
+/** Held keys, key presses and mouse-yoke state of one crew member, from the keyboard (KeyboardInput)
+ * or from a network packet (RemoteInput); the station code reads either the same way. */
+export class InputState {
+  protected down = new Set<string>();
+  protected pressed: string[] = [];
   mouseYoke = false;
   mouseYokeXY = { x: 0, y: 0 };
 
-  constructor(target: Window = window) {
-    target.addEventListener("keydown", (e) => {
-      if (e.repeat) return;
-      this.down.add(e.code);
-      this.pressed.push(e.code + (e.shiftKey ? "+S" : ""));
-      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space", "Tab"].includes(e.code)) e.preventDefault();
-    });
-    target.addEventListener("keyup", (e) => this.down.delete(e.code));
-    target.addEventListener("blur", () => this.down.clear());
+  /** Held keys (for sending). */
+  heldKeys(): string[] {
+    return [...this.down];
   }
 
   isDown(code: string) {
@@ -103,6 +99,39 @@ export class KeyboardInput {
     if (pressed.has("KeyF+S")) c.flaps = clamp01(Math.round((c.flaps - 0.25) * 4) / 4);
     if (pressed.has("KeyP")) c.parkingBrake = !c.parkingBrake;
     if (pressed.has("KeyY")) this.mouseYoke = !this.mouseYoke;
+  }
+}
+
+export class KeyboardInput extends InputState {
+  /** Typing into a text field (name entry) does not reach the aircraft. */
+  enabled = true;
+
+  constructor(target: Window = window) {
+    super();
+    target.addEventListener("keydown", (e) => {
+      if (e.repeat || !this.enabled || (e.target as HTMLElement | null)?.tagName === "INPUT") return;
+      this.down.add(e.code);
+      this.pressed.push(e.code + (e.shiftKey ? "+S" : ""));
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space", "Tab"].includes(e.code)) e.preventDefault();
+    });
+    target.addEventListener("keyup", (e) => this.down.delete(e.code));
+    target.addEventListener("blur", () => this.down.clear());
+  }
+}
+
+/** A remote crew member's input, fed from their packets on the host. */
+export class RemoteInput extends InputState {
+  feed(held: string[], pressed: string[], mouseYoke: boolean, xy: { x: number; y: number }) {
+    this.down = new Set(held);
+    // the mouse yoke is toggled on the player's own machine and sent as state
+    for (const k of pressed) if (k !== "KeyY" && k !== "KeyY+S") this.pressed.push(k);
+    this.mouseYoke = mouseYoke;
+    this.mouseYokeXY = { x: xy.x, y: xy.y };
+  }
+
+  clear() {
+    this.down.clear();
+    this.pressed = [];
   }
 }
 

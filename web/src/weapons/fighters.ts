@@ -117,6 +117,32 @@ export class Fighters {
     this.rounds.clear();
   }
 
+  /** Multiplayer replica: create, move and remove fighters to match the host (no AI, no hits). */
+  syncFrom(list: { id: number; pos: THREE.Vector3; vel: THREE.Vector3; quat: THREE.Quaternion; state: string; smoking: boolean; burning: boolean }[]) {
+    const seen = new Set<number>();
+    for (const s of list) {
+      seen.add(s.id);
+      let f = this.list.find((x) => x.id === s.id);
+      if (!f) {
+        f = new Fighter(s.id, this.template.clone());
+        f.pos.copy(s.pos);
+        this.group.add(f.obj);
+        this.list.push(f);
+      }
+      f.prevPos.copy(f.pos);
+      f.pos.copy(s.pos);
+      f.vel.copy(s.vel);
+      f.state = s.state as Fighter["state"];
+      f.smoking = s.smoking;
+      f.burning = s.burning;
+      f.obj.position.copy(s.pos);
+      f.obj.quaternion.copy(s.quat);
+    }
+    for (let i = this.list.length - 1; i >= 0; i--) {
+      if (!seen.has(this.list[i].id)) { this.group.remove(this.list[i].obj); this.list.splice(i, 1); }
+    }
+  }
+
   /** A wave of `n` fighters appears 9-12 km out, in pairs, from random bearings. */
   spawnWave(fm: FlightModel, n = 4) {
     this.waves++;

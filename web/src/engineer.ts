@@ -1,5 +1,5 @@
 // Flight engineer station: keyboard controls and status text.
-import type { KeyboardInput } from "./input";
+import type { InputState } from "./input";
 import type { FlightModel } from "./sim/flightmodel";
 import { CHT_LIMIT, MIXTURE_NAMES, RPM_LEVER } from "./sim/powerplant";
 
@@ -11,8 +11,19 @@ export const FE_HELP =
 export class Engineer {
   selected = [0, 1, 2, 3, 4, 5];
 
+  /** Engine selection keys only (a crew member's own screen shows their selection at once). */
+  select(pressed: string[]) {
+    for (const k of pressed) {
+      const m = /^Digit(\d)/.exec(k);
+      if (!m) continue;
+      const n = Number(m[1]);
+      if (n === 0) this.selected = [0, 1, 2, 3, 4, 5];
+      else if (n <= 6) this.selected = [n - 1];
+    }
+  }
+
   /** Applies the FE seat's keys; returns a message for the crew line, if any. */
-  update(fm: FlightModel, input: KeyboardInput, pressed: string[], dt: number): string | null {
+  update(fm: FlightModel, input: InputState, pressed: string[], dt: number): string | null {
     let msg: string | null = null;
     const sel = this.selected.map((i) => fm.pistons[i]);
     for (const k of pressed) {
