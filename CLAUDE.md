@@ -22,3 +22,5 @@ See SPEC.md for decisions, plan and status.
   is authoritative; crew poses are always in the aircraft model frame (never world coordinates).
   Any new station control must go through `stationFrame` (keys) or `ctl` (pointer commands) so remote
   crew can use it, and any new visible state must be added to `net/replicate.ts`.
+- Windows executable: `cd web && npm run exe` (Node single executable: server/exe.ts entry, game
+  embedded as SEA assets, build script exe/build.mjs, output web/exe/out/, not committed).

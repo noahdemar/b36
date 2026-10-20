@@ -32,7 +32,8 @@ export function lanAddresses(): string[] {
   return out;
 }
 
-export function startServer(opts: { port?: number; root: string; log?: (s: string) => void }) {
+/** `files`, when given, serves the game from memory (the packaged executable) instead of `root`. */
+export function startServer(opts: { port?: number; root: string; log?: (s: string) => void; files?: (path: string) => Buffer | null }) {
   const log = opts.log ?? ((s: string) => console.log(s));
   const root = resolve(opts.root);
   const peers = new Map<number, Peer>();
@@ -53,10 +54,15 @@ export function startServer(opts: { port?: number; root: string; log?: (s: strin
       if (path.endsWith("/")) path += "index.html";
       const file = normalize(join(root, path));
       if (file !== root && !file.startsWith(root + sep)) { res.writeHead(403).end(); return; } // no path traversal
-      const st = await stat(file).catch(() => null);
-      if (!st || !st.isFile()) { res.writeHead(404).end("not found"); return; }
+      let body: Buffer | null;
+      if (opts.files) body = opts.files(file.slice(root.length + 1).split(sep).join("/"));
+      else {
+        const st = await stat(file).catch(() => null);
+        body = st?.isFile() ? await readFile(file) : null;
+      }
+      if (!body) { res.writeHead(404).end("not found"); return; }
       res.writeHead(200, { "content-type": MIME[extname(file).toLowerCase()] ?? "application/octet-stream", "cache-control": "no-cache" });
-      res.end(await readFile(file));
+      res.end(body);
     } catch {
       res.writeHead(500).end();
     }
@@ -122,7 +128,8 @@ export function startServer(opts: { port?: number; root: string; log?: (s: strin
   }, 5000);
 
   const port = opts.port ?? DEFAULT_PORT;
-  return new Promise<{ port: number; close: () => Promise<void> }>((res) => {
+  return new Promise<{ port: number; close: () => Promise<void> }>((res, rej) => {
+    http.once("error", (e) => { clearInterval(beat); rej(e); });
     http.listen(port, () => { // all interfaces, IPv4 and IPv6
       const addr = http.address();
       const actual = typeof addr === "object" && addr ? addr.port : port;
@@ -134,14 +141,16 @@ export function startServer(opts: { port?: number; root: string; log?: (s: strin
   });
 }
 
+export function printBanner(p: number) {
+  console.log(`B-36 multicrew server on port ${p}`);
+  console.log(`  You (host): http://localhost:${p}`);
+  for (const a of lanAddresses()) console.log(`  Crew on your network: http://${a}:${p}`);
+  console.log("  Crew over the internet: forward TCP port " + p + " on your router to this machine, then share http://<your public IP>:" + p);
+}
+
 // run directly: node --experimental-strip-types server/server.ts [port]
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && import.meta.url && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = Number(process.argv[2] ?? process.env.PORT ?? DEFAULT_PORT);
   const root = resolve(fileURLToPath(new URL("../dist", import.meta.url)));
-  startServer({ port, root }).then(({ port: p }) => {
-    console.log(`B-36 multicrew server on port ${p}`);
-    console.log(`  You (host): http://localhost:${p}`);
-    for (const a of lanAddresses()) console.log(`  Crew on your network: http://${a}:${p}`);
-    console.log("  Crew over the internet: forward TCP port " + p + " on your router to this machine, then share http://<your public IP>:" + p);
-  });
+  startServer({ port, root }).then(({ port: p }) => printBanner(p));
 }

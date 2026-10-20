@@ -25,6 +25,21 @@ is simulated in your browser, so keep that tab open (it keeps running in the bac
 
 Use another port with `npm run serve:nobuild -- 9000` after a build, or `PORT=9000 npm run serve`.
 
+## Host with the Windows executable (no Node needed)
+
+`B36-Multicrew.exe` (108 MB; 43 MB zipped) contains the game and the session server. Double-click it:
+a console window shows the addresses and your browser opens the game. Keep the window open while you
+play; close it to end the session. Another port: run `B36-Multicrew.exe 9000` from a command prompt.
+
+It is not code-signed, so Windows SmartScreen says "Windows protected your PC": choose "More info" and
+"Run anyway". Windows Firewall asks the first time: allow private networks (and public only if friends
+join over the internet).
+
+Build it from source (on any OS, needs Node 22 and internet for the Windows runtime):
+`cd web && npm install && npm run exe`; the file is written to `web/exe/out/`.
+Other systems: `node exe/build.mjs linux-x64` (or darwin-arm64; a macOS build must be signed on a Mac
+with `codesign --sign - <file>` before it runs).
+
 ## Crew
 
 Open the address the host gives you (for example `http://192.168.1.20:8036`), enter a name and board. You
